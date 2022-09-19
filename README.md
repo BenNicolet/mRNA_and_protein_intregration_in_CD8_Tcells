@@ -4,7 +4,7 @@
 ### You can find all the scripts used in our paper in this repository. 
 
 
-Doi to BioRxiv: 
+Doi to BioRxiv: https://doi.org/10.1101/2020.04.21.053884 
 
 Doi to published article: 
 
