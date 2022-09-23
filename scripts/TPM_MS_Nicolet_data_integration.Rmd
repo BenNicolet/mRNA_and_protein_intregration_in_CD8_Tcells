@@ -1,0 +1,2086 @@
+---
+title: "TPM_MS_Nicolet_data_integration"
+author: "Benoit Nicolet"
+date: "04/16/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+#source("https://bioconductor.org/biocLite.R")
+#biocLite()
+library(plyr)
+library(dplyr)
+library(pheatmap)
+library(ggplot2)
+library(corrplot)
+library(circlize)
+library(biomaRt)
+library(tidyverse)
+library(viridis)
+library(ggpointdensity)
+
+
+knitr::opts_knit$set("~/Analysis/mRNA-Prot_integration/")
+
+```
+
+
+```{r BiomaRt objects}
+#listEnsemblArchives()
+
+ensembl = useMart(biomart="ensembl", dataset="hsapiens_gene_ensembl", host = "http://apr2018.archive.ensembl.org")
+attributes_ens <- listAttributes(ensembl) # Here getting the list of attributes. There are >3000 of them, so you can filter : ) 
+tx2gene <- getBM(attributes=c( "ensembl_transcript_id_version","ensembl_gene_id"), mart = ensembl)
+colnames(tx2gene) <- c("Tx_ID","Gene_ID")
+
+ensemblnew = useMart(biomart="ensembl", dataset="hsapiens_gene_ensembl", host = "http://jan2020.archive.ensembl.org")
+annotation_2G <- getBM(attributes=c("ensembl_gene_id","external_gene_name","percentage_gene_gc_content","gene_biotype"), mart = ensemblnew)
+
+```
+
+
+
+## Importing TPM RNA-seq counts from Salmon
+```{r importing new TPM}
+dirN <- file.path( "~/Analysis/mRNA-Prot_integration/quants/") # folder path to data
+tx2gene <-read.delim("~/Analysis/mRNA-Prot_integration/tx_ID_Gene_ID.txt",sep = ",") # list of genes+ transcripts ID 
+colnames(tx2gene) <- c("Tx_ID","Gene_ID")
+head(tx2gene)
+
+# Here I create a list of my filenames to allow batch import
+{
+samples <-NULL
+samples$Sample.name <- c("001-001_R1.fastq_quant","001-002_R1.fastq_quant","001-003_R1.fastq_quant",
+             "001-004_R1.fastq_quant","001-005_R1.fastq_quant","001-006_R1.fastq_quant",
+             "001-007_R1.fastq_quant","001-008_R1.fastq_quant","001-009_R1.fastq_quant",
+             "001-010_R1.fastq_quant","001-011_R1.fastq_quant","001-012_R1.fastq_quant")
+samples <- as.data.frame(samples)
+}
+head(samples)
+filesN <- file.path(dirN, samples$Sample.name, "quant.sf") # linking the folder path + sample name + extension "quant.sf"
+
+#Here giving the right names for the sample names from the sample file
+names(filesN) <- paste0(samples$Sample.name) # putting samples names to get a nice table
+filesN
+
+## Here is a cool function to import the column 1 and 4 of all my quant.sf files
+allDataN <- lapply(filesN, function(.file){
+  
+   dat<-read.delim(.file, header=T,sep = "\t")
+   dat<-dat[,c(-2,-3,-5)]
+   dat <- dat[,1:2]
+   dat    # return the dataframe
+})
+
+
+TPM_2G <- do.call(cbind, allDataN) # combine into a single dataframe
+TPM_2G$ID <- TPM_2G$`001-001_R1.fastq_quant.Name`
+head(TPM_2G)
+TPM_2G <- TPM_2G[, -grep("Name", colnames(TPM_2G))] # as all col with "names" are the same, I drop them
+
+head(TPM_2G)
+colnames(TPM_2G) <- c("IL21", "IFNG1","DP1","DN1",
+                   "IL22", "IFNG2","DP2","DN2",
+                   "IL23", "IFNG3","DP3","DN3","ID")
+head(TPM_2G)
+TPM_2G <- data.frame(TPM_2G$ID,TPM_2G$DN1,TPM_2G$DN2,TPM_2G$DN3,
+                  TPM_2G$IL21,TPM_2G$IL22,TPM_2G$IL23,
+                  TPM_2G$IFNG1,TPM_2G$IFNG2,TPM_2G$IFNG3,
+                  TPM_2G$DP1,TPM_2G$DP2,TPM_2G$DP3)
+colnames(TPM_2G) <- c("ID","DN1","DN2","DN3","IL21","IL22","IL23", "IFNG1","IFNG2","IFNG3","DP1","DP2","DP3")
+head(TPM_2G)
+sum(TPM_2G$DN1)
+
+TPM_2G <- merge(TPM_2G, tx2gene, by.x="ID", by.y="Tx_ID", all.x=T)
+#TPM_2G <- ddply(TPM_2G,"Gene_ID", numcolwise(sum))
+dim(TPM_2G)
+sum(TPM_2G$DN1)
+
+TPM_2G <- subset(TPM_2G, TPM_2G$DN1>0 | TPM_2G$DN2>0 | TPM_2G$DN3>0 |
+                  TPM_2G$IL21>0 | TPM_2G$IL22>0 | TPM_2G$IL23>0 |
+                  TPM_2G$IFNG1>0 | TPM_2G$IFNG2>0 | TPM_2G$IFNG3>0 |
+                  TPM_2G$DP1>0 | TPM_2G$DP2>0 | TPM_2G$DP3>0)
+
+
+### merging gene info with TPM_2Gs ###
+TPM_2G <- merge(TPM_2G, annotation_2G, by.x="Gene_ID", by.y="ensembl_gene_id", all.x=T)
+#TPM_2G <- merge(TPM_2G, DE_ID, by.x="Gene_ID",by.y="ID",all.x=T)
+#TPM_2G[is.na(TPM_2G)]=""
+dim(TPM_2G)# 126469
+TPM_2G <- ddply(TPM_2G,"external_gene_name", numcolwise(sum)) # i want to get the TPM counts per genes, so I sum up the TPM for the different transcripts isoforms per gene name
+dim(TPM_2G) # 22832
+
+sum(TPM_2G$DN1)
+
+
+# write.table(TPM_2G,"TPM_2G.csv", sep=";", dec=",", row.names = F)
+
+```
+
+
+## Importing protein copy numbers
+```{r importing CN}
+### now gettting CN data ###
+
+copy_number_2G_raw <- read.delim("~/Analysis/mRNA-Prot_integration/Copy_number_2G_2valid_values_n4734proteins_new.txt",dec=",")
+
+dim(copy_number_2G_raw) # 4734
+copy_number_2G <- NULL
+
+
+copy_number_2G <- data.frame("ID"=copy_number_2G_raw$T..Gene.name,
+                             "DN1_CN"=copy_number_2G_raw$N..Copy.number.DN040816,
+                             "DN2_CN"=copy_number_2G_raw$N..Copy.number.DN210616,
+                             "DN3_CN"=copy_number_2G_raw$N..Copy.number.DN230916,
+                             "IL2_1_CN"=copy_number_2G_raw$N..Copy.number.IL2040816,
+                             "IL2_2_CN"=copy_number_2G_raw$N..Copy.number.IL2210616,
+                             "IL2_3_CN"=copy_number_2G_raw$N..Copy.number.IL2230916,
+                             "IFNG1_CN"=copy_number_2G_raw$N..Copy.number.IfnG040816,
+                             "IFNG2_CN"=copy_number_2G_raw$N..Copy.number.IfnG210616,
+                             "IFNG3_CN"=copy_number_2G_raw$N..Copy.number.IfnG230916,
+                             "DP1_CN"=copy_number_2G_raw$N..Copy.number.DP040816,
+                             "DP2_CN"=copy_number_2G_raw$N..Copy.number.DP210616,
+                             "DP3_CN"=copy_number_2G_raw$N..Copy.number.DP230916,
+                             "Avg_MW"=copy_number_2G_raw$N..Average.molecular.mass,
+                             "pt_ID"=copy_number_2G_raw$T..Majority.protein.IDs,
+                             "Num_peptide"=copy_number_2G_raw$N..Peptides)
+
+#IBAQ$Protein.IDs
+copy_number_2G$old_ID <- copy_number_2G$ID
+copy_number_2G$ID <- mapply(strsplit(as.character(copy_number_2G$ID),";"),FUN=function(x){(as.character(x)[1])})
+#copy_number_2G$Avg_MW[is.na(copy_number_2G$Avg_MW)]=0
+#CN_2G <- subset(copy_number_2G,copy_number_2G$Avg_MW>0)
+CN_2G <- copy_number_2G
+CN_2G[CN_2G==0]=NA
+CN_2G$avg_CN <- rowMeans(CN_2G[2:13],na.rm = T)
+CN_2G$avg_log_CN <- log10(CN_2G$avg_CN)
+
+
+dim(CN_2G) # 4734
+min(CN_2G$Num_peptide)
+
+max(CN_2G$avg_log_CN,na.rm = T)-min(CN_2G$avg_log_CN,na.rm = T) #5.73
+
+CN_2G$pt_ID <- mapply(strsplit(as.character(CN_2G$pt_ID),";"),FUN=function(x){(as.character(x)[1])})
+CN_2G$pt_ID <- mapply(strsplit(as.character(CN_2G$pt_ID),"-"),FUN=function(x){(as.character(x)[1])})
+uniprot <- read.delim("~/Analysis/mRNA-Prot_integration/uniprot-Human.tab", header = T)
+#uniprot <- read.delim("/Users/stinky/Dropbox/regulatory_networks_CD8/Analysis/uniprot-Human.tab", header = T)
+#head(uniprot)
+
+uniprot$Gene.names <- mapply(strsplit(as.character(uniprot$Gene.names)," "),FUN=function(x){(as.character(x)[1])})
+uniprot$Gene.names <- mapply(strsplit(as.character(uniprot$Gene.names),";"),FUN=function(x){(as.character(x)[1])})
+
+CN_2G <- merge(CN_2G, uniprot, by.x="pt_ID", by.y="Entry", all.x=T)
+
+CN_2G$Gene.names[CN_2G$Gene.names==""]=NA
+CN_2G$Gene.names <- mapply(strsplit(as.character(CN_2G$Gene.names),";"),FUN=function(x){(as.character(x)[1])})
+
+CN_2G$Gene.ID <- CN_2G$Gene.names
+CN_2G$Gene.ID <-
+  ifelse(is.na(CN_2G$Gene.ID)==TRUE,as.character(CN_2G$ID),as.character(CN_2G$Gene.ID))
+
+table(CN_2G$ID == CN_2G$Gene.ID) #FALSE=75 lets use Gene_ID!
+
+dim(CN_2G)
+#CN_2G$ID <- mapply(strsplit(as.character(CN_2G$Gene.ID),";"),FUN=function(x){(as.character(x)[1])})
+
+
+CN2G_dups <- CN_2G[duplicated(CN_2G$Gene.ID) | duplicated(CN_2G$Gene.ID, fromLast=TRUE), ]
+dim(CN2G_dups)
+CN_2G <- CN_2G[!duplicated(CN_2G$Gene.ID) & !duplicated(CN_2G$Gene.ID, fromLast=TRUE), ]
+dim(CN_2G)
+CN_2G[17:25] <- NULL
+#CN_2G[6:11] <- NULL
+#CN_2G$old_ID <- NULL
+
+
+
+CN2G_dups <- ddply(CN2G_dups,"Gene.ID", numcolwise(sum))
+
+CN2G_dups <- cbind.data.frame("pt_ID"=CN2G_dups$Gene.ID, "ID"=CN2G_dups$Gene.ID, CN2G_dups[2:16], "Gene.ID"=CN2G_dups$Gene.ID)
+
+CN2G_dups$avg_CN <- NULL
+
+dim(CN2G_dups)
+dim(CN_2G)
+
+colnames(CN2G_dups)
+colnames(CN_2G)
+
+colnames(CN2G_dups) == colnames(CN_2G)
+
+
+CN_2G <- rbind.data.frame(CN_2G,CN2G_dups)
+dim(CN_2G)# Tada!!! There are 4672 unique proteins!
+table(duplicated(CN_2G$Gene.ID)) # No more duplicates!! Woop woop
+table(CN_2G$ID ==CN_2G$Gene.ID) # There are some differences in gene names ... We ll see what works when merging with TPMs
+
+
+#write.table(CN_2G,"CN_2G.csv", sep=";", dec=",", row.names = F)
+
+
+
+```
+
+
+# Distribution of data
+## TPM distribution
+```{r TPM distribution, echo=FALSE}
+### making a mean per population and total mean for new TPMs ###
+{
+TPM_2G_dist <- NULL
+TPM_2G_dist$ID <- TPM_2G$external_gene_name
+TPM_2G_dist$DN_TPM_2G <- log10(rowMeans(TPM_2G[,2:4],na.rm=TRUE))
+TPM_2G_dist$IL2_TPM_2G <- log10(rowMeans(TPM_2G[,5:7],na.rm=TRUE))
+TPM_2G_dist$IFNG_TPM_2G <- log10(rowMeans(TPM_2G[,8:10],na.rm=TRUE))
+TPM_2G_dist$DP_TPM_2G <- log10(rowMeans(TPM_2G[,11:13],na.rm=TRUE))
+TPM_2G_dist <- data.frame(TPM_2G_dist)
+TPM_2G_dist$mean_of_means_TPM_2G <- rowMeans(TPM_2G_dist[,2:5],na.rm=TRUE)
+
+TPM_2G_dist <- merge(TPM_2G_dist,annotation_2G, by.y="external_gene_name",by.x="ID", all.x=T)
+dim(TPM_2G_dist)
+TPM_2G_dist <- distinct(TPM_2G_dist,ID,.keep_all = T)
+TPM_2G_dist <- subset(TPM_2G_dist, TPM_2G_dist$gene_biotype=="protein_coding")
+dim(TPM_2G_dist)
+TPM_2G_dist <- TPM_2G_dist[TPM_2G_dist$mean_of_means_TPM_2G>=-7.482613,]
+}
+head(TPM_2G_dist) # 15804
+dim(TPM_2G_dist[TPM_2G_dist$mean_of_means_TPM_2G>0.01,]) # we detect an average of 13031 genes expressed. 
+#col_fun = colorRamp2(c(-3, -1.5, 0, 1.5, 3), #c("#053061","#579EC9","#FFFFFF","#D96651","#67001F"))
+
+ggplot(TPM_2G_dist, aes((mean_of_means_TPM_2G)))+
+  geom_histogram(binwidth=.2,fill="#579EC9", color="black")+
+  #geom_histogram(data=TPM_2G_dist[TPM_2G_dist$group == "sig",],binwidth=.5,fill="grey")+
+  scale_x_continuous(expand = c(0,0), limits = c(-2.3,6), breaks = c(-2,-1,0,1,2,3,4,5,6)) +
+  scale_y_continuous(expand = c(0,0), limits = c(0,1600)) +
+  theme_classic()
+max(TPM_2G_dist$mean_of_means_TPM_2G, na.rm = T)-min(TPM_2G_dist$mean_of_means_TPM_2G, na.rm = T)
+# min= -2.252491  | max= 4.329344   | span=6.581835
+
+#### Cumulative RNA plot ####
+TPM_2G_dist$perc_all_RNA <- mapply("^",10,TPM_2G_dist$mean_of_means_TPM_2G)
+TPM_2G_dist$perc_all_RNA <- mapply("/",TPM_2G_dist$perc_all_RNA, sum(TPM_2G_dist$perc_all_RNA,na.rm = T))
+TPM_2G_dist$perc_all_RNA <- mapply("*",TPM_2G_dist$perc_all_RNA,100)
+TPM_2G_dist <- TPM_2G_dist[order(TPM_2G_dist$mean_of_means_TPM_2G,decreasing = T),]
+TPM_2G_dist$cum_all_RNA <- cumsum(TPM_2G_dist$perc_all_RNA)
+TPM_2G_dist$rank_all_RNA <- 1:nrow(TPM_2G_dist)
+
+ggplot(TPM_2G_dist, aes(x=TPM_2G_dist$rank_all_RNA,y=TPM_2G_dist$cum_all_RNA))+
+  geom_point()+
+  scale_x_continuous(limits = c(0,25000))+
+  theme_minimal()
+
+# write.table(TPM_2G_dist,"TPM_2G_dist_2G.csv", sep=";", dec=",", row.names = F)
+
+```
+
+## CN distribution
+```{r cumulative CN expression}
+
+CN_2G[CN_2G==0]=NA
+CN_2G$avg_CN <- rowMeans(CN_2G[3:14],na.rm = T)
+CN_2G$avg_log_CN <- log10(CN_2G$avg_CN)
+
+CN_2G$avg_log_CN <- CN_2G$avg_CN
+CN_2G$avg_log_CN <- log10(CN_2G$avg_log_CN)
+dim(CN_2G) # 4672
+#min(CN_2G$Num_peptide)
+
+max(CN_2G$avg_log_CN,na.rm = T)-min(CN_2G$avg_log_CN,na.rm = T) #5.741032
+
+copy_num_avg_2G <- CN_2G
+copy_num_avg_2G$perc_all_CN <- mapply("/",copy_num_avg_2G$avg_CN,sum(copy_num_avg_2G$avg_CN,na.rm = T)) # making a fraction of the individual protein contribution to the proteome (sum)
+copy_num_avg_2G$perc_all_CN <- mapply("*",copy_num_avg_2G$perc_all_CN,100) # now in %
+copy_num_avg_2G <- copy_num_avg_2G[order(copy_num_avg_2G$perc_all_CN,decreasing = T),] # ordering
+copy_num_avg_2G$cum_all_CN <- cumsum(copy_num_avg_2G$perc_all_CN) # Cumulative sum , really cool function
+copy_num_avg_2G$rank_all_CN <- 1:nrow(copy_num_avg_2G) # This will add a number of row, as we ordered the dataframe in the line above, it will make a ranking ! 
+
+ggplot(copy_num_avg_2G,aes(x=rank_all_CN,y=cum_all_CN))+
+  geom_point(color="#bc5090")+
+  #geom_text(label=CD$ID.Symbol.Symbol,vjust=0.3,hjust=-0.3,angle=-45, size=2.5)+
+  scale_x_continuous(expand = c(0.01,0)) +
+  scale_y_continuous(expand = c(0,0), limits = c(0,101)) +
+  theme_minimal()
+  ggrepel::geom_text_repel(label=copy_num_avg_2G$ID, size=2.5)
+
+
+  
+  ggplot(copy_num_avg_2G, aes(avg_log_CN))+
+  geom_histogram(binwidth=.2,fill="#579EC9", color="black")+
+  #geom_histogram(data=TPM_2G_dist[TPM_2G_dist$group == "sig",],binwidth=.5,fill="grey")+
+  scale_x_continuous(expand = c(0,0), limits = c(1,9), breaks = c(1,3,5,7,9)) +
+  scale_y_continuous(expand = c(0,0), limits = c(0,550)) +
+  theme_classic()
+  
+  
+  #write.table(copy_num_avg_2G,"copy_num_avg_2G_2G.csv", sep=";", dec=",", row.names = F)
+
+```
+
+
+## Plotting cumulative mRNA and protein expression
+```{r plotting cumulative expression}
+RNA_cum <- data.frame("group"="RNA","cum%"=TPM_2G_dist$cum_all_RNA,"rank"=TPM_2G_dist$rank_all_RNA,"ID"=TPM_2G_dist$ID)
+MS_cum <- data.frame("group"="MS","cum%"=copy_num_avg_2G$cum_all_CN,"rank"=copy_num_avg_2G$rank_all_CN,"ID"= copy_num_avg_2G$Gene.ID)
+
+RNA_MS_cum <- rbind.data.frame(RNA_cum,MS_cum)
+RNA_MS_cum$top[RNA_MS_cum$rank<=5]="top"
+
+RNA_MS_cum$ID <- mapply(strsplit(as.character(RNA_MS_cum$ID),";"),FUN=function(x){(as.character(x)[1])})
+
+ggplot(RNA_MS_cum, aes(x=log10(rank),y=cum., color=group))+
+  geom_point()+
+  scale_x_continuous(limits = c(0,4.5), expand = c(0.01,0))+
+  scale_y_continuous(limits = c(0,100), expand = c(0.01,0))+
+  ggrepel::geom_text_repel(data=RNA_MS_cum[RNA_MS_cum$top=="top" & RNA_MS_cum$group=="MS",], aes(label=ID), nudge_y =30, min.segment.length = 0.01)+
+  ggrepel::geom_text_repel(data=RNA_MS_cum[RNA_MS_cum$top=="top" & RNA_MS_cum$group=="RNA",], aes(label=ID),min.segment.length = 0.01, nudge_y =3, nudge_x = 1.2, force = 1)+
+  theme_minimal()
+
+# top 25% = 14 proteins = 0.3022453 %
+# top 50% = 106 proteins = 2.288428 %
+# top 75% = 403 proteins = 8.700345 %
+
+
+# top 25% = 105 mRNA = 0.8040432 %
+# top 50% = 583 mRNA = 4.464354 %
+# top 75% = 2295 mRNA = 17.57409 %
+
+2295/13059*100
+
+```
+
+## Merging copy numbers with TPM
+```{r merging CN and TPM}
+
+table(duplicated(TPM_2G_dist$ID)) ## Should be all false!!!
+
+## Now for protein data
+table(duplicated(CN_2G$Gene.ID)) ## Should be all false!!!
+
+# 
+# 
+CN_2G$ID_equal_gene <- (CN_2G$ID %in% CN_2G$Gene.ID)
+
+CN_2G_extra <- subset(CN_2G,CN_2G$ID_equal_gene==FALSE)
+
+
+CN_TPM_2G <- merge(TPM_2G_dist,CN_2G, by.y="Gene.ID", by.x="ID")
+CN_TPM_2G_byGene <- merge(TPM_2G_dist,CN_2G_extra, by.y="ID", by.x="ID")
+
+CN_2G_extra$not_tpm <- (CN_2G_extra$ID %in% TPM_2G_dist$ID)
+CN_2G_extra_geneID <- subset(CN_2G_extra,CN_2G_extra$not_tpm==FALSE)
+
+CN_TPM_2G_byGeneID <- merge(TPM_2G_dist,CN_2G_extra_geneID, by.y="Gene.ID", by.x="ID")
+
+dim(CN_TPM_2G)
+dim(CN_TPM_2G_byGene)
+dim(CN_TPM_2G_byGeneID)
+
+table(CN_TPM_2G_byGene$Gene.ID == CN_TPM_2G$ID)
+table(CN_TPM_2G_byGeneID$Gene.ID == CN_TPM_2G$ID)
+
+CN_TPM_2G$ID.y <- NULL
+CN_TPM_2G_byGene$Gene.ID <- NULL
+CN_TPM_2G_byGeneID$ID.y<- NULL
+
+
+CN_TPM_2G_byGeneID$not_tpm<- NULL
+
+
+colnames(CN_TPM_2G) == colnames(CN_TPM_2G_byGene)
+colnames(CN_TPM_2G) == colnames(CN_TPM_2G_byGeneID)
+colnames(CN_TPM_2G_byGene) == colnames(CN_TPM_2G_byGeneID)
+
+CN_TPM_2G <- rbind.data.frame(CN_TPM_2G,CN_TPM_2G_byGene)
+table(duplicated(CN_TPM_2G$ID)) # 4648 mRNA-protein pairs!
+#test <- CN_TPM_2G[duplicated(CN_TPM_2G$pt_ID)| duplicated(CN_TPM_2G$pt_ID,fromLast = T),]
+dim(CN_TPM_2G) # 4648 mRNA-protein pairs!
+
+4648/4672*100
+4648/13055*100
+#CN_TPM_2G <- merge(CN_2G,TPM_2G_dist,by.x="Gene.ID",by.y="ID")
+#dim(CN_TPM_2G) # 4648
+CN_TPM_2G$avg_CN <- rowMeans(CN_TPM_2G[14:25],na.rm = T)
+CN_TPM_2G$avg_log_CN <- log10(CN_TPM_2G$avg_CN)
+
+max(CN_TPM_2G$avg_log_CN,na.rm = T)-min(CN_TPM_2G$avg_log_CN,na.rm = T)# 5.741032
+
+CN_TPM_2G <- do.call(data.frame,lapply(CN_TPM_2G,function(x) replace(x, is.infinite(x),NA)))
+summary(CN_TPM_2G$avg_log_CN)
+  #  Min. 1st Qu.  Median    Mean 3rd Qu.    Max.    NA's 
+  # 2.238   4.171   4.639   4.714   5.182   7.979       1 
+
+
+cor(CN_TPM_2G$avg_log_CN,(CN_TPM_2G$mean_of_means_TPM_2G),use = "pairwise.complete.obs", method = "pearson") # 0.4187183
+cor.test(CN_TPM_2G$avg_log_CN,(CN_TPM_2G$mean_of_means_TPM_2G),use = "pairwise.complete.obs", method = "pearson")# < 2.2e-16
+
+cor(CN_TPM_2G$avg_log_CN,(CN_TPM_2G$mean_of_means_TPM_2G),use = "pairwise.complete.obs", method = "spearman") # 0.3671362
+cor.test(CN_TPM_2G$avg_log_CN,(CN_TPM_2G$mean_of_means_TPM_2G),use = "pairwise.complete.obs", method = "spearman")# < 2.2e-16
+
+summary(lm((CN_TPM_2G$avg_log_CN)~(CN_TPM_2G$mean_of_means_TPM_2G))) # < 2.2e-16
+
+
+ggplot(data=CN_TPM_2G,aes(x=mean_of_means_TPM_2G,y=avg_log_CN))+
+  geom_pointdensity(stroke=0, show.legend = F)+
+  scale_color_viridis(option = "H")+
+  scale_x_continuous(limits = c(-1,4.5),expand = c(0,0))+
+  scale_y_continuous(limits = c(2,8),expand = c(0,0),breaks = c(2,4,6,8))+
+  geom_smooth(method = "lm",na.rm = T)+
+  theme_minimal()+
+  theme(aspect.ratio = 1)
+
+
+summary(lm(CN_TPM_2G$avg_log_CN~CN_TPM_2G$mean_of_means_TPM_2G)) # 0.5834 ***
+
+
+CN_TPM_2G$DN_TPM_2G<- NULL
+CN_TPM_2G$IL2_TPM_2G <- NULL
+CN_TPM_2G$IFNG_TPM_2G <- NULL
+CN_TPM_2G$DP_TPM_2G <- NULL
+
+CN_TPM_2G$DN1_CN <- NULL
+CN_TPM_2G$DN2_CN <- NULL
+CN_TPM_2G$DN3_CN <- NULL
+CN_TPM_2G$DP1_CN <- NULL
+CN_TPM_2G$DP2_CN <- NULL
+CN_TPM_2G$DP3_CN <- NULL
+CN_TPM_2G$IFNG1_CN <- NULL
+CN_TPM_2G$IFNG2_CN <- NULL
+CN_TPM_2G$IFNG3_CN <- NULL
+CN_TPM_2G$IL2_1_CN <- NULL
+CN_TPM_2G$IL2_2_CN <- NULL
+CN_TPM_2G$IL2_3_CN <- NULL
+CN_TPM_2G$ID_equal_gene <- NULL
+
+```
+
+
+## Prep for Venn-diagram
+```{r Venn prep}
+
+dim(CN_2G) # 4672 proteins
+dim(TPM_2G_dist[TPM_2G_dist$mean_of_means_TPM_2G>0.001,]) # 12994 genes
+dim(CN_TPM_2G) # 4648
+
+4672-4648 # 24 only detected in MS (CN)
+4648/4672*100 # 99.4863 %
+12994-4648 # 8346 only detected at RNA-seq level
+4648/12994*100 # 35.77036 %
+```
+
+
+
+## Preparing lists of genes per gene-class
+```{r Preparing lists of genes per gene-class}
+
+
+## Enzymes
+Enzymes_list <- read.delim("/home/ben/Analysis/RF_human/Gene_class_lists/protein_class_Enzymes.tsv")
+Enzymes_list <- data.frame("ID"=Enzymes_list$Gene)
+
+## ribosomal pt
+ribo_list <- read.delim("/home/ben/Analysis/RF_human/Gene_class_lists/protein_class_Ribosomal.tsv")
+mamm_ribo_list <- ribo_list[-grep("Mito",ribo_list$Gene.description),]
+mamm_ribo_list <- data.frame("ID"=mamm_ribo_list$Gene)
+
+## RBPs
+castello <- read.delim("/home/ben/Analysis/RF_human/Gene_class_lists/RBP_Castello_et_al_2016.csv", sep=";",header=T) 
+castello <- data.frame("ID"=castello$Symbol)
+eRIC <- read.delim("/home/ben/Analysis/RF_human/Gene_class_lists/Perez-Perri2018_RBP_eRIC.csv", sep=";",header=T) 
+eRIC <- data.frame("ID"=eRIC$gene_name)
+tuschl <- read.delim("/home/ben/Analysis/RF_human/Gene_class_lists/Tuschl_2014.csv", sep=";",header=T) 
+colnames(tuschl) <- "ID"
+
+RBP_list <- rbind(castello,eRIC,tuschl)
+RBP_list <- distinct(RBP_list, RBP_list$ID)
+colnames(RBP_list) <- "ID"
+
+RBP_list$ribo <- RBP_list$ID %in% ribo_list$Gene
+RBP_list <- subset(RBP_list,RBP_list$ribo==FALSE)
+RBP_list$ribo <- NULL
+dim(RBP_list) #1855 
+
+## CD ##
+CD_list <- read.delim("/home/ben/Analysis/RF_human/Gene_class_lists/protein_class_CD.tsv", sep="")
+colnames(CD_list) <- "ID"
+
+
+## membrane proteins ##
+membrane_list <- read.delim("/home/ben/Analysis/RF_human/Gene_class_lists/protein_class_Predicted_membrane.tsv",header = T)
+membrane_list$ID <- membrane_list$Gene
+membrane_list <- subset(membrane_list,membrane_list$Evidence=="Evidence at protein level")
+membrane_list <- subset(membrane_list,membrane_list$UniProt.evidence=="Evidence at protein level")
+dim(membrane_list)
+membrane_list <- data.frame("ID"=membrane_list$Gene)
+
+## Secreted
+secreted_list <- read.delim("/home/ben/Analysis/RF_human/Gene_class_lists/Secreted_protein_filtered copy.csv", sep=";", header = T)
+secreted_list <- subset(secreted_list,secreted_list$Evidence>0)
+secreted_list <- data.frame("ID"=secreted_list$Gene)
+dim(secreted_list)
+
+## TFs
+TF_list <- read.delim("/home/ben/Analysis/RF_human/Gene_class_lists/protein_class_Transcription.tsv")
+TF_list <- subset(TF_list,TF_list$Evidence>0)
+TF_list <- data.frame("ID"=TF_list$Gene)
+
+# Mito ribo pt (too small)
+ribo_list <- read.delim("/home/ben/Analysis/RF_human/Gene_class_lists/protein_class_Ribosomal.tsv")
+mito_ribo_list <- ribo_list[grep("Mito",ribo_list$Gene.description),]
+mito_ribo_list <- data.frame("ID"=mito_ribo_list$Gene)
+dim(mito_ribo_list)
+# AU_rich <- read.delim("/home/ben/Analysis/RF_human/Gene_class_lists/Complete_3UTR_Data_ARED_PLUS.csv", sep=";")
+# AU_rich$length <- mapply(strsplit(as.character(AU_rich$Pattern),","),FUN=function(x){nchar(x)})
+
+## voltage gated channels ##
+# ion_chanels_list <- read.delim("/home/ben/Analysis/RF_human/Gene_class_lists/protein_class_Voltage-gated.tsv")
+# ion_chanels_list <- subset(ion_chanels_list,ion_chanels_list$Evidence>0)
+# ion_chanels_list <- data.frame("ID"=ion_chanels_list$Gene)
+# dim(ion_chanels_list)
+# 
+# 
+# ## transporters ##
+# transporters_list <- read.delim("/home/ben/Analysis/RF_human/Gene_class_lists/protein_class_Transporters.tsv")
+# transporters_list <- subset(transporters_list,transporters_list$Evidence>0)
+# transporters_list <- data.frame("ID"=transporters_list$Gene)
+# dim(transporters_list)
+
+## TCA_list
+TCA_list <- read.delim("/home/ben/Analysis/RF_human/Gene_class_lists/protein_class_Citric.tsv")
+TCA_list <- data.frame("ID"=TCA_list$Gene)
+
+```
+
+
+
+# mRNA-protein relation
+## Secreted proteins
+```{r secreted protein prot-RNA relation}
+
+secreted_2G <- merge(CN_TPM_2G,secreted_list,by.x="ID",by.y="ID")
+head(secreted_2G)
+dim(secreted_2G) # 22
+  
+ggplot(secreted_2G,aes(x=mean_of_means_TPM_2G,y=avg_log_CN))+
+  geom_point(data=CN_TPM_2G, color="grey",stroke=0,size=2)+
+  geom_smooth(method = "lm",color="black")+
+  geom_point(color="#851e3e",stroke=0,size=3)+
+  ggrepel::geom_text_repel(label=secreted_2G$ID, size=4, force = 6,min.segment.length = 0.01)+
+  scale_x_continuous(limits = c(-1,5),expand = c(0,0), breaks = c(-1,1,3,5))+
+  scale_y_continuous(limits = c(2,8),expand = c(0,0), breaks = c(2,4,6,8))+
+  theme_minimal()
+
+
+
+cor(secreted_2G$avg_log_CN,secreted_2G$mean_of_means_TPM_2G,use = "pairwise.complete.obs", method = "spear") #  0.5688312
+cor(secreted_2G$avg_log_CN,secreted_2G$mean_of_means_TPM_2G,use = "pairwise.complete.obs", method = "pear") # 0.5742671
+
+
+slope_for_plot <- NULL
+slope_for_plot$secreted_2G <- 0.6057
+
+10^abs(secreted_2G$avg_log_CN[secreted_2G$ID=="CSF2"]-secreted_2G$avg_log_CN[secreted_2G$ID=="CXCL8"]) # x3
+10^abs(secreted_2G$mean_of_means_TPM_2G[secreted_2G$ID=="CSF2"]-secreted_2G$mean_of_means_TPM_2G[secreted_2G$ID=="CXCL8"]) # 37x
+
+
+10^abs(secreted_2G$avg_log_CN[secreted_2G$ID=="GZMA"]-secreted_2G$avg_log_CN[secreted_2G$ID=="GZMB"]) # x1.38
+10^abs(secreted_2G$mean_of_means_TPM_2G[secreted_2G$ID=="GZMA"]-secreted_2G$mean_of_means_TPM_2G[secreted_2G$ID=="GZMB"]) # 45x
+
+
+10^abs(secreted_2G$avg_log_CN[secreted_2G$ID=="GZMA"]-secreted_2G$avg_log_CN[secreted_2G$ID=="GNLY"]) # x6.5
+10^abs(secreted_2G$mean_of_means_TPM_2G[secreted_2G$ID=="GZMA"]-secreted_2G$mean_of_means_TPM_2G[secreted_2G$ID=="GNLY"]) #1.12 x
+
+
+```
+
+
+## CD molecules
+```{r CD expression total}
+
+CD <- merge(CD_list,CN_TPM_2G, by="ID")
+dim(CD) #84
+#CD <- data.frame(CD)
+  
+ggplot(CD,aes(x=mean_of_means_TPM_2G,y=avg_log_CN))+
+  geom_point(data=CN_TPM_2G, color="grey",stroke=0,size=2)+
+  geom_smooth(method="lm", color="black")+
+  geom_point(color="#ff77aa",stroke=0,size=3)+
+  ggrepel::geom_text_repel(data=CN_TPM_2G[CN_TPM_2G$ID=="CD8A" | CN_TPM_2G$ID=="CD8B"| CN_TPM_2G$ID=="CD3G"| CN_TPM_2G$ID=="CD3E"| CN_TPM_2G$ID=="CD44"| CN_TPM_2G$ID=="SELL"| CN_TPM_2G$ID=="IL2RG"| CN_TPM_2G$ID=="IL2RA"|CN_TPM_2G$ID=="IL2RB" | CN_TPM_2G$ID=="CD40LG" | CN_TPM_2G$ID=="ITGB1" | CN_TPM_2G$ID=="LAG3" | CN_TPM_2G$ID=="ENTPD1" | CN_TPM_2G$ID=="CD27" | CN_TPM_2G$ID=="LAMP1" | CN_TPM_2G$ID=="CD69" | CN_TPM_2G$ID=="PTPRC" | CN_TPM_2G$ID=="ITGAM",],aes(label=ID) , size=4, color="black",force = 4, min.segment.length = 0.01)+
+  scale_x_continuous(limits = c(-1,5),expand = c(0,0), breaks = c(-1,1,3,5))+
+  scale_y_continuous(limits = c(2,8),expand = c(0,0), breaks = c(2,4,6,8))+
+  theme_minimal()
+
+cor(CD$avg_log_CN,CD$mean_of_means_TPM_2G,use = "pairwise.complete.obs", method = "spear") 
+cor(CD$avg_log_CN,CD$mean_of_means_TPM_2G,use = "pairwise.complete.obs", method = "pear") 
+# spearman 0.3992447   |   pearson 0.4259503
+
+lm(CD$avg_log_CN~CD$mean_of_means_TPM_2G)
+# Slope 0.4199
+
+slope_for_plot$CD <- 0.4199
+
+10^abs(CD$avg_log_CN[CD$ID.Symbol=="CD8A"]-CD$avg_log_CN[CD$ID.Symbol=="IL2RB"]) # x26.91
+10^abs(CD$mean_of_means_TPM_2G[CD$ID.Symbol=="CD8A"]-CD$mean_of_means_TPM_2G[CD$ID.Symbol=="IL2RB"]) # 1.21
+
+
+
+10^abs(CD$avg_log_CN[CD$ID.Symbol=="IL2RA"]-CD$avg_log_CN[CD$ID.Symbol=="IL2RB"]) # 3.76
+10^abs(CD$avg_log_CN[CD$ID.Symbol=="IL2RG"]-CD$avg_log_CN[CD$ID.Symbol=="IL2RB"]) # 6.48
+#14:1:16
+#3.8:1:6.5
+
+10^abs(CD$mean_of_means_TPM_2G[CD$ID.Symbol=="IL2RA"]-CD$mean_of_means_TPM_2G[CD$ID.Symbol=="IL2RB"]) # 3.54
+10^abs(CD$mean_of_means_TPM_2G[CD$ID.Symbol=="IL2RG"]-CD$mean_of_means_TPM_2G[CD$ID.Symbol=="IL2RB"]) # 2.26
+
+
+#write.table(CD,"CD_2G_ibaq.csv", sep=";", dec=",", row.names = F)
+
+```
+
+
+## Transcription factors
+```{r TF expression total}
+
+TF_2G <- merge(TF_list,CN_TPM_2G,by="ID")
+dim(TF_2G) # 176 TF_2G !
+
+#TF_2G <- data.frame(TF_2G)
+  
+ggplot(TF_2G,aes(x=mean_of_means_TPM_2G,y=avg_log_CN))+
+  geom_point(data=CN_TPM_2G, color="grey", alpha=1, stroke=0, size=2)+
+  geom_smooth(method="lm", color="black")+
+  geom_point(color="#ee4035", stroke=0, size=3)+
+  ggrepel::geom_text_repel(data=CN_TPM_2G[CN_TPM_2G$ID=="TBX21" | CN_TPM_2G$ID=="JUN"| CN_TPM_2G$ID=="JUNB"| CN_TPM_2G$ID=="EOMES"| CN_TPM_2G$ID=="NFATC2"| CN_TPM_2G$ID=="STAT1"| CN_TPM_2G$ID=="STAT4"| CN_TPM_2G$ID=="BACH2",],aes(label=ID), size=4, color="black",force = 50, min.segment.length = 0.01)+
+  scale_x_continuous(limits = c(-1,5),expand = c(0,0), breaks = c(-1,1,3,5))+
+  scale_y_continuous(limits = c(2,8),expand = c(0,0), breaks = c(2,4,6,8))+
+  theme_minimal()
+
+cor(TF_2G$avg_log_CN,TF_2G$mean_of_means_TPM_2G,use = "pairwise.complete.obs", method = "spear") # 0.2838367
+cor(TF_2G$avg_log_CN,TF_2G$mean_of_means_TPM_2G,use = "pairwise.complete.obs", method = "pear") # 0.3077022
+
+10^abs(TF_2G$avg_log_CN[TF_2G$Gene=="STAT1"]-TF_2G$avg_log_CN[TF_2G$Gene=="TBX21"]) # 152.86
+
+10^abs(TF_2G$mean_of_means_TPM_2G[TF_2G$Gene=="STAT1"]-TF_2G$mean_of_means_TPM_2G[TF_2G$Gene=="TBX21"]) # 1.08
+
+#write.table(TF_2G,"TF_2G_ibaq.csv", sep=";", dec=",", row.names = F)
+
+```
+
+
+## Ribosomal proteins 
+```{r ribo expression total}
+
+mamm_ribo_2G <- merge(mamm_ribo_list,CN_TPM_2G, by="ID")
+dim(mamm_ribo_2G) # 93 proteins !
+
+mito_ribo_2G <- merge(mito_ribo_list,CN_TPM_2G, by="ID")
+dim(mito_ribo_2G) # 66
+
+ggplot(mito_ribo_2G,aes(x=mean_of_means_TPM_2G,y=avg_log_CN))+
+  geom_point(data=CN_TPM_2G, color="grey", stroke=0, size=2)+
+  geom_point(data=mamm_ribo_2G,color="#4CBB17", size=3, stroke=0)+
+  geom_point(data=mito_ribo_2G,color="#1e8449", size=3, stroke=0)+
+  geom_smooth(method="lm", color="#1e8449",data = mito_ribo_2G)+
+  geom_smooth(method="lm", color="#4CBB17",data = mamm_ribo_2G)+
+  ggrepel::geom_text_repel(data=CN_TPM_2G[CN_TPM_2G$ID=="RPL22L1"| CN_TPM_2G$ID=="RPL22",],aes(label=ID), size=3, color="black", min.segment.length = 0.01,force = 8)+
+  scale_x_continuous(limits = c(-1,5),expand = c(0,0), breaks = c(-1,1,3,5))+
+  scale_y_continuous(limits = c(2,8),expand = c(0,0), breaks = c(2,4,6,8))+
+  theme_minimal()
+
+
+cor(mamm_ribo_2G$avg_log_CN,
+    mamm_ribo_2G$mean_of_means_TPM_2G,
+    use = "pairwise.complete.obs", 
+    method = "spear") # 0.451971
+
+cor(mamm_ribo_2G$avg_log_CN,
+    mamm_ribo_2G$mean_of_means_TPM_2G,
+    use = "pairwise.complete.obs",
+    method = "pear") # 0.7276804
+
+
+cor(mito_ribo_2G$avg_log_CN,mito_ribo_2G$mean_of_means_TPM_2G,use = "pairwise.complete.obs", method = "spear") # 0.00979021
+cor(mito_ribo_2G$avg_log_CN,mito_ribo_2G$mean_of_means_TPM_2G,use = "pairwise.complete.obs", method = "pear") # 0.03362066
+
+
+#write.table(ribo,"ribo_2G_ibaq.csv", sep=";", dec=",", row.names = F)
+  
+```
+
+
+## TCA cycle 
+```{r TCA expression total}
+
+TCA_2G <- merge(TCA_list,CN_TPM_2G,by.x="ID", by.y="ID")
+dim(TCA_2G) # 24 out of 30 TCA proteins !
+
+
+ggplot(TCA_2G,aes(x=mean_of_means_TPM_2G,y=avg_log_CN))+
+  geom_point(data=CN_TPM_2G, color="grey", alpha=1, stroke=0,size=2)+
+  geom_smooth(method="lm", color="black")+
+  geom_point(color="#63ace5", stroke=0,size=3)+
+  ggrepel::geom_text_repel(data=TCA_2G[TCA_2G$Gene=="IDH1" | TCA_2G$Gene=="IDH2" | TCA_2G$Gene=="PCK2",],aes(label=ID), size=4,color="darkblue",min.segment.length = 0.01,force = 15)+
+  scale_x_continuous(limits = c(-1,5),expand = c(0,0), breaks = c(-1,1,3,5))+
+  scale_y_continuous(limits = c(2,8),expand = c(0,0), breaks = c(2,4,6,8))+
+  theme_minimal()
+
+cor(TCA_2G$avg_log_CN,TCA_2G$mean_of_means_TPM_2G,use = "pairwise.complete.obs", method = "spear") # 0.4234783
+cor(TCA_2G$avg_log_CN,TCA_2G$mean_of_means_TPM_2G,use = "pairwise.complete.obs", method = "pear") # 0.6956313
+
+
+#write.table(TCA,"TCA_2G_ibaq.csv", sep=";", dec=",", row.names = F)
+
+```
+
+
+## RNA-binding proteins
+```{r RBP_2G expression total}
+RBP_2G <- merge(RBP_list,CN_TPM_2G,by.x="ID", by.y="ID")
+dim(RBP_2G) # 1174 RBP
+
+
+ggplot(RBP_2G,aes(x=mean_of_means_TPM_2G,y=avg_log_CN))+
+  geom_point(data=CN_TPM_2G, color="grey", stroke=0, size=2)+
+  geom_smooth(method="lm", color="black")+
+  geom_point(data=RBP_2G,color="#e59866", stroke=0, size=2)+
+  geom_point(color="#ee4035", stroke=0, size=3, alpha=1, data=RBP_2G[(RBP_2G$ID=="ZFP36L1" | RBP_2G$ID=="ILF3"| RBP_2G$ID=="ELAVL1"| RBP_2G$ID=="TIA1"| RBP_2G$ID=="HNRNPL"| RBP_2G$ID=="HNRNPLL"| RBP_2G$ID=="CELF2"),])+
+  ggrepel::geom_text_repel(data=RBP_2G[RBP_2G$ID=="ZFP36L1" | RBP_2G$ID=="ILF3"| RBP_2G$ID=="ELAVL1"| RBP_2G$ID=="TIA1"| RBP_2G$ID=="HNRNPL"| RBP_2G$ID=="HNRNPLL"| RBP_2G$ID=="CELF2",],aes(label=ID), size=4, color="black", min.segment.length = 0.01,force = 20)+
+  scale_x_continuous(limits = c(-1,5),expand = c(0,0), breaks = c(-1,1,3,5))+
+  scale_y_continuous(limits = c(2,8),expand = c(0,0), breaks = c(2,4,6,8))+
+  theme_minimal()
+  
+
+cor(RBP_2G$avg_log_CN,RBP_2G$mean_of_means_TPM_2G,use = "pairwise.complete.obs", method = "spear") # 0.4872756
+cor(RBP_2G$avg_log_CN,RBP_2G$mean_of_means_TPM_2G,use = "pairwise.complete.obs", method = "pear") # 0.5067376
+
+
+#write.table(RBP_2G,"RBP_2G.csv", sep=";", dec=",", row.names = F)
+
+10^abs(RBP_2G[RBP_2G$ID=="ZFP36L1",]$mean_of_means_TPM_2G-RBP_2G[RBP_2G$ID=="ILF3",]$mean_of_means_TPM_2G) # 1
+10^abs(RBP_2G[RBP_2G$ID=="ZFP36L1",]$mean_of_means_TPM_2G-RBP_2G[RBP_2G$ID=="ELAVL1",]$mean_of_means_TPM_2G) # 8.26
+10^abs(RBP_2G[RBP_2G$ID=="ILF3",]$mean_of_means_TPM_2G-RBP_2G[RBP_2G$ID=="ELAVL1",]$mean_of_means_TPM_2G) # 8.19
+
+10^abs(RBP_2G[RBP_2G$ID=="ZFP36L1",]$avg_log_CN-RBP_2G[RBP_2G$ID=="ILF3",]$avg_log_CN) # 21.99
+10^abs(RBP_2G[RBP_2G$ID=="ZFP36L1",]$avg_log_CN-RBP_2G[RBP_2G$ID=="ELAVL1",]$avg_log_CN) # 18.97
+10^abs(RBP_2G[RBP_2G$ID=="ILF3",]$avg_log_CN-RBP_2G[RBP_2G$ID=="ELAVL1",]$avg_log_CN) # 1.159
+
+
+```
+
+
+
+## Gene-class characteristics in 2G subset
+```{r Gene-class characteristics in 2G subset}
+
+### 1. Correlation ###
+corr_2G <- NULL
+
+## TCA
+cor.test(TCA_2G$avg_log_CN,TCA_2G$mean_of_means_TPM_2G,use = "pairwise.complete.obs", method = "pear") #0.0001606
+cor(TCA_2G$avg_log_CN,TCA_2G$mean_of_means_TPM_2G,use = "pairwise.complete.obs", method = "pear") # 0.7052948
+corr_2G$TCA <- 0.7052948
+
+
+## mammalian ribosomal pt
+cor.test(mamm_ribo_2G$avg_log_CN,mamm_ribo_2G$mean_of_means_TPM_2G,use = "pairwise.complete.obs", method = "pear") #< 2.2e-16
+cor(mamm_ribo_2G$avg_log_CN,mamm_ribo_2G$mean_of_means_TPM_2G,use = "pairwise.complete.obs", method = "pear") # 0.7229633
+corr_2G$mamm_ribo <- 0.7229633
+  
+
+## RBPs
+cor.test(RBP_2G$avg_log_CN,RBP_2G$mean_of_means_TPM_2G,use = "pairwise.complete.obs", method = "pear")# < 2.2e-16
+cor(RBP_2G$avg_log_CN,RBP_2G$mean_of_means_TPM_2G,use = "pairwise.complete.obs", method = "pear") # 0.5138632
+corr_2G$RBP <- 0.5138632
+  
+
+## CD
+cor.test(CD$avg_log_CN,CD$mean_of_means_TPM_2G,use = "pairwise.complete.obs", method = "pear")# 5.017e-05
+cor(CD$avg_log_CN,CD$mean_of_means_TPM_2G,use = "pairwise.complete.obs", method = "pear") # 0.4259503
+corr_2G$CD <- 0.4259503
+
+
+## Secreted
+cor.test(secreted_2G$avg_log_CN,secreted_2G$mean_of_means_TPM_2G,use = "pairwise.complete.obs", method = "pear")# 0.005993
+cor(secreted_2G$avg_log_CN,secreted_2G$mean_of_means_TPM_2G,use = "pairwise.complete.obs", method = "pear") # 0.5742671
+corr_2G$secreted <- 0.5742671
+
+## TFs
+cor.test(TF_2G$avg_log_CN,TF_2G$mean_of_means_TPM_2G,use = "pairwise.complete.obs", method = "pear")# 3.263e-05
+cor(TF_2G$avg_log_CN,TF_2G$mean_of_means_TPM_2G,use = "pairwise.complete.obs", method = "pear") # 0.3077022
+corr_2G$TF <- 0.3077022
+
+## Mito ribo pt
+cor.test(mito_ribo_2G$avg_log_CN,mito_ribo_2G$mean_of_means_TPM_2G,use = "pairwise.complete.obs", method = "pear")# 0.7887
+cor(mito_ribo_2G$avg_log_CN,mito_ribo_2G$mean_of_means_TPM_2G,use = "pairwise.complete.obs", method = "pear") # 0.03362066
+corr_2G$mito_ribo <- 0.03362066
+
+
+
+corr_2G <- data.frame(corr_2G)
+
+
+#_____________________________#
+
+### 2. Slope ###
+
+slope_2G <- NULL
+
+## TCA
+summary(lm(TCA_2G$avg_log_CN~TCA_2G$mean_of_means_TPM_2G) )# Slope 0.8102 ***
+slope_2G$TCA <- 0.8102
+
+## mammalian ribosomal pt
+summary(lm(mamm_ribo_2G$avg_log_CN~mamm_ribo_2G$mean_of_means_TPM_2G)) # Slope 0.8315  ***
+slope_2G$mamm_ribo <- 0.8315
+  
+## RBPs
+summary(lm(RBP_2G$avg_log_CN~RBP_2G$mean_of_means_TPM_2G)) # Slope 0.7883  ***
+slope_2G$RBP <- 0.7883
+  
+## CD
+summary(lm(CD$avg_log_CN~CD$mean_of_means_TPM_2G)) # Slope 0.4199  ***
+slope_2G$CD <- 0.4199
+
+## Secreted
+summary(lm(secreted_2G$avg_log_CN~secreted_2G$mean_of_means_TPM_2G)) # Slope 0.6057  **
+slope_2G$secreted <- 0.6057
+
+## TFs
+summary(lm(TF_2G$avg_log_CN~TF_2G$mean_of_means_TPM_2G)) # Slope 0.3965  ***
+slope_2G$TF <- 0.3965
+
+## Mito ribo pt
+summary(lm(mito_ribo_2G$avg_log_CN~mito_ribo_2G$mean_of_means_TPM_2G)) # Slope 0.0299  
+slope_2G$mito_ribo <- 0.0299
+
+slope_2G <- data.frame(slope_2G)
+
+## integration with Tn, Tcm, Tem in "TPM_MS_CX3CR1_independent_subsets.rmd"
+
+### correlation (Spearman) ###
+
+corr_2G_spearman <- NULL
+
+## TCA
+cor(TCA_2G$avg_log_CN,TCA_2G$mean_of_means_TPM_2G,use = "pairwise.complete.obs", method = "spear") # 0.4234783
+corr_2G_spearman$TCA <- 0.4234783
+
+
+## mammalian ribosomal pt
+cor(mamm_ribo_2G$avg_log_CN,mamm_ribo_2G$mean_of_means_TPM_2G,use = "pairwise.complete.obs", method = "spear") # 0.451971
+corr_2G_spearman$mamm_ribo <- 0.451971
+  
+
+## RBPs
+cor(RBP_2G$avg_log_CN,RBP_2G$mean_of_means_TPM_2G,use = "pairwise.complete.obs", method = "spear") # 0.4872756
+corr_2G_spearman$RBP <- 0.4872756
+  
+
+## CD
+cor(CD$avg_log_CN,CD$mean_of_means_TPM_2G,use = "pairwise.complete.obs", method = "spear") # 0.3992447
+corr_2G_spearman$CD <- 0.3992447
+
+
+## Secreted
+cor(secreted_2G$avg_log_CN,secreted_2G$mean_of_means_TPM_2G,use = "pairwise.complete.obs", method = "spear") # 0.5688312
+corr_2G_spearman$secreted <- 0.5688312
+
+## TFs
+cor(TF_2G$avg_log_CN,TF_2G$mean_of_means_TPM_2G,use = "pairwise.complete.obs", method = "spear") # 0.2838367
+corr_2G_spearman$TF <- 0.2838367
+
+## Mito ribo pt
+cor(mito_ribo_2G$avg_log_CN,mito_ribo_2G$mean_of_means_TPM_2G,use = "pairwise.complete.obs", method = "spear") # 0.00979021
+corr_2G_spearman$mito_ribo <- 0.00979021
+corr_2G_spearman <- data.frame(corr_2G_spearman)
+
+```
+
+```{r heatmap of corr}
+corr_2G_spearman
+col_fun = colorRamp2(c(-3, -1.5, 0, 1.5, 3), c("#053061","#579EC9","#FFFFFF","#D96651","#67001F"))
+pheatmap(corr_2G_spearman, col_fun(seq(-3,3,by=0.01)) ,scale = "none",
+         clustering_distance_cols = "manhattan", cluster_cols = F, cluster_rows = F,
+         labels_col=colnames(corr_2G_spearman),fontsize_row=0.1,
+         clustering_distance_rows = "manhattan",display_numbers=T)
+
+
+```
+
+
+
+## What is different between gene classes?
+```{r What is different between gene classes?}
+
+Gene_wise_3UTR_list <- read.delim("/Users/stinky/Dropbox/regulatory_networks_CD8/Analysis/3UTR_motifs_list_from_sequences.csv",sep = ";", dec = ",",row.names = F)
+Gene_wise_5UTR_list <- read.delim("/Users/stinky/Dropbox/regulatory_networks_CD8/Analysis/5UTR_motifs_list_from_sequences.csv",sep = ";", dec = ",",row.names = F)
+
+Gene_wise_CDS_list <- read.delim("/Users/stinky/Dropbox/regulatory_networks_CD8/Analysis/CDS_motifs_list_from_sequences.csv",sep = ";", dec = ",",row.names = F)
+
+CDS_lengths <- data.frame(
+"TCA"=mean(Gene_wise_CDS_list[Gene_wise_CDS_list$external_gene_name %in% TCA_2G$ID,]$CDS_length),
+"mamm_ribo"=mean(Gene_wise_CDS_list[Gene_wise_CDS_list$external_gene_name %in% mamm_ribo_2G$ID,]$CDS_length),
+"RBP"=mean(Gene_wise_CDS_list[Gene_wise_CDS_list$external_gene_name %in% RBP_2G$ID,]$CDS_length),
+"CD"=mean(Gene_wise_CDS_list[Gene_wise_CDS_list$external_gene_name %in% CD$ID,]$CDS_length),
+"secreted"=mean(Gene_wise_CDS_list[Gene_wise_CDS_list$external_gene_name %in% secreted_2G$ID,]$CDS_length),
+"TF"=mean(Gene_wise_CDS_list[Gene_wise_CDS_list$external_gene_name %in% TF_2G$ID,]$CDS_length),
+"mito_ribo"=mean(Gene_wise_CDS_list[Gene_wise_CDS_list$external_gene_name %in% mito_ribo_2G$ID,]$CDS_length))
+
+CDS_GC_perc <- data.frame(
+"TCA"=mean(Gene_wise_CDS_list[Gene_wise_CDS_list$external_gene_name %in% TCA_2G$ID,]$GC_percentage),
+"mamm_ribo"=mean(Gene_wise_CDS_list[Gene_wise_CDS_list$external_gene_name %in% mamm_ribo_2G$ID,]$GC_percentage),
+"RBP"=mean(Gene_wise_CDS_list[Gene_wise_CDS_list$external_gene_name %in% RBP_2G$ID,]$GC_percentage),
+"CD"=mean(Gene_wise_CDS_list[Gene_wise_CDS_list$external_gene_name %in% CD$ID,]$GC_percentage),
+"secreted"=mean(Gene_wise_CDS_list[Gene_wise_CDS_list$external_gene_name %in% secreted_2G$ID,]$GC_percentage),
+"TF"=mean(Gene_wise_CDS_list[Gene_wise_CDS_list$external_gene_name %in% TF_2G$ID,]$GC_percentage),
+"mito_ribo"=mean(Gene_wise_CDS_list[Gene_wise_CDS_list$external_gene_name %in% mito_ribo_2G$ID,]$GC_percentage))
+
+
+```
+
+
+## mRNA protein ratio
+```{r mRNA protein ratio}
+{ratio_2G_mem <- NULL
+
+ratio_2G_mem$secreted <- c(mean(secreted_2G$mean_of_means_TPM_2G,na.rm=T), mean(secreted_2G$avg_log_CN,na.rm=T),"Secreted")
+ratio_2G_mem$CD <- c(mean(CD$mean_of_means_TPM_2G,na.rm=T), mean(CD$avg_log_CN,na.rm=T),"CD")
+ratio_2G_mem$TF <- c(mean(TF_2G$mean_of_means_TPM_2G,na.rm=T), mean(TF_2G$avg_log_CN,na.rm=T),"TF")
+ratio_2G_mem$RBP <- c(mean(RBP_2G$mean_of_means_TPM_2G,na.rm=T), mean(RBP_2G$avg_log_CN,na.rm=T),"RBP")
+
+ratio_2G_mem$mito_ribo <- c(mean(mito_ribo_2G$mean_of_means_TPM_2G,na.rm=T),mean(mito_ribo_2G$avg_log_CN,na.rm=T),"mito_ribo")
+
+ratio_2G_mem$mamma_ribo <- c(mean(mamm_ribo_2G$mean_of_means_TPM_2G,na.rm=T),
+                                mean(mamm_ribo_2G$avg_log_CN,na.rm=T),"mamma_ribo")
+
+ratio_2G_mem$TCA <- c(mean(TCA_2G$mean_of_means_TPM_2G,na.rm=T), mean(TCA_2G$avg_log_CN,na.rm=T),"TCA")
+
+
+
+ratio_2G_mem <- data.frame(ratio_2G_mem)
+rownames(ratio_2G_mem) <- c("mean_of_means_TPM_2G", "avg_log_CN", "group")
+ratio_2G_mem <- data.frame(t(ratio_2G_mem))
+ratio_2G_mem[,1:2] <- lapply(ratio_2G_mem[,1:2], function(x) {
+    if(is.factor(x)) as.character(x) else x
+  })
+sapply(ratio_2G_mem, class)
+ratio_2G_mem[,1:2] <- lapply(ratio_2G_mem[,1:2], function(x) {
+    if(is.character(x)) as.numeric(x) else x
+  })
+sapply(ratio_2G_mem, class)
+
+}
+
+ggplot(ratio_2G_mem,aes(x=mean_of_means_TPM_2G, y=avg_log_CN))+
+  geom_point(data=CN_TPM_2G, color="black",stroke=0,size=1, alpha=0.1)+
+  stat_density_2d(data=CN_TPM_2G, aes(fill = stat(nlevel)), geom = "polygon", alpha=0.3)+
+  geom_point(data=ratio_2G_mem,stroke=2,size=4, aes(color=group))+
+  scale_color_manual(values=c("#ff77aa","#e59866","#851e3e", "#63ace5", "#ee4035", "#4CBB17", "#1e8449"))+
+  ggrepel::geom_text_repel(data=ratio_2G_mem,label=ratio_2G_mem$group, size=4, force = 6,min.segment.length = 0.01)+
+  scale_x_continuous(expand = c(0,0), limits = c(-1,5)) +
+  scale_y_continuous(expand = c(0,0), limits = c(1.5,8)) +
+  theme_minimal()
+
+
+```
+
+
+
+
+# Gene characteristics
+
+## Conservation (orthology) with Zebra Fish
+```{r conservation with fish (Ensembl)}
+Ortho_fish <- read.delim("/home/ben/Analysis/mRNA-Prot_integration/mart_export_zebra_fish_conservation_orthologue.txt",sep=",")
+
+dim(CN_TPM_2G[Ortho_fish$Gene.name %in% CN_TPM_2G$ID,])
+
+Ortho_fish <- ddply(Ortho_fish,"Gene.name", numcolwise(mean,na.rm=TRUE),.drop = F)
+
+Ortho_fish_CN_TPM <- merge(Ortho_fish,CN_TPM_2G,by.y="ID",by.x="Gene.name",all.y = T)
+
+col_fun = colorRamp2(c(-3, -1.5, 0, 1.5, 3), c("#053061","#579EC9","#FFFFFF","#D96651","#67001F"))
+
+Ortho_fish_CN_TPM$ortho_fish <- Ortho_fish_CN_TPM$X.id..target.Zebrafish.gene.identical.to.query.gene
+#Ortho_fish_CN_TPM$ortho_fish <- Ortho_fish_CN_TPM$X.id..query.gene.identical.to.target.Zebrafish.gene
+
+
+Ortho_fish_CN_TPM <- Ortho_fish_CN_TPM %>% mutate(ortho_fish_group = ntile(ortho_fish, 4))
+
+table(Ortho_fish_CN_TPM$ortho_fish_group)
+
+#Ortho_fish_CN_TPM$ortho_fish_group <- "mid"
+#Ortho_fish_CN_TPM$ortho_fish_group[Ortho_fish_CN_TPM$ortho_fish>80]="high>80"
+#Ortho_fish_CN_TPM$ortho_fish_group[Ortho_fish_CN_TPM$ortho_fish<45]="low<45"
+Ortho_fish_CN_TPM$ortho_fish_group[Ortho_fish_CN_TPM$ortho_fish_group==3]="2"
+
+Ortho_fish_CN_TPM <- subset(Ortho_fish_CN_TPM, !Ortho_fish_CN_TPM$ortho_fish_group=="NA")
+
+dim(Ortho_fish_CN_TPM)
+dim(CN_TPM_2G)
+4087/4583*100 # 89.17739 found with values in both
+
+t.test(Ortho_fish_CN_TPM$avg_log_CN[Ortho_fish_CN_TPM$ortho_fish_group=="1"],Ortho_fish_CN_TPM$avg_log_CN[Ortho_fish_CN_TPM$ortho_fish_group=="2"])
+p.adjust(p=6.666e-16,n=2123.2, method = "BH")# Padj= 1.415325e-12
+
+t.test(Ortho_fish_CN_TPM$avg_log_CN[Ortho_fish_CN_TPM$ortho_fish_group=="1"],Ortho_fish_CN_TPM$avg_log_CN[Ortho_fish_CN_TPM$ortho_fish_group=="4"])
+p.adjust(p=2.2e-16,n=2150.8, method = "BH")# Padj= 4.73176e-13
+
+t.test(Ortho_fish_CN_TPM$avg_log_CN[Ortho_fish_CN_TPM$ortho_fish_group=="2"],Ortho_fish_CN_TPM$avg_log_CN[Ortho_fish_CN_TPM$ortho_fish_group=="4"])
+p.adjust(p=2.2e-16,n=1817.8, method = "BH")# Padj= 3.99916e-13
+
+
+
+
+  t.test(Ortho_fish_CN_TPM$mean_of_means_TPM_2G[Ortho_fish_CN_TPM$ortho_fish_group=="1"],Ortho_fish_CN_TPM$mean_of_means_TPM_2G[Ortho_fish_CN_TPM$ortho_fish_group=="2"])
+p.adjust(p=0.0113,n=1868.5, method = "BH")# Padj= 1
+
+  t.test(Ortho_fish_CN_TPM$mean_of_means_TPM_2G[Ortho_fish_CN_TPM$ortho_fish_group=="1"],Ortho_fish_CN_TPM$mean_of_means_TPM_2G[Ortho_fish_CN_TPM$ortho_fish_group=="4"])
+p.adjust(p=2.2e-16,n=2041, method = "BH")# Padj= 4.4902e-13
+
+  t.test(Ortho_fish_CN_TPM$mean_of_means_TPM_2G[Ortho_fish_CN_TPM$ortho_fish_group=="2"],Ortho_fish_CN_TPM$mean_of_means_TPM_2G[Ortho_fish_CN_TPM$ortho_fish_group=="4"])
+p.adjust(p=2.2e-16,n=1874.3, method = "BH")# Padj= 4.12346e-13
+
+
+ggplot(Ortho_fish_CN_TPM, aes(x=mean_of_means_TPM_2G,y=avg_log_CN, color=ortho_fish_group ))+
+  geom_point(data=Ortho_fish_CN_TPM, stroke=0, size=2)+
+  scale_color_manual(values=c("#003f5c", "#A4A4A4", "#ffa600"))+
+  geom_smooth(data= Ortho_fish_CN_TPM[Ortho_fish_CN_TPM$ortho_fish_group=="1",],method = "lm", color="#003f5c")+
+  geom_smooth(data= Ortho_fish_CN_TPM[Ortho_fish_CN_TPM$ortho_fish_group=="2",],method = "lm", color="#A4A4A4")+
+  geom_smooth(data= Ortho_fish_CN_TPM[Ortho_fish_CN_TPM$ortho_fish_group=="4",],method = "lm", color="#ffa600")+
+  scale_x_continuous(limits = c(-1,5),expand = c(0,0), breaks = c(-1,1,3,5))+
+  scale_y_continuous(limits = c(2,8),expand = c(0,0), breaks = c(2,4,6,8))+
+  ggtitle("Orthologous conservation",subtitle = "slope= 1:0.466 | 2:0.5231 | 4:0.8553")+
+  theme_classic()
+
+
+ggplot(Ortho_fish_CN_TPM,aes(x=ortho_fish_group,y=avg_log_CN, color=ortho_fish_group))+
+  geom_point(position = "jitter", stroke=0, size=2)+
+  scale_color_manual(values=c("#003f5c", "#A4A4A4", "#ffa600"))+
+  stat_summary(fun.y = median, fun.ymin = median, fun.ymax = median,
+                 geom = "crossbar", width = 0.8, color="red")+
+  #scale_x_continuous(expand = c(0,0), limits = c(1.5,8)) +
+  ggtitle("Ortho_fish content CN",subtitle = "1:2=1.41e-12|1:4=4.49e-13|2:4=3.99e-13")+
+  scale_y_continuous(expand = c(0,0), limits = c(2,8)) +
+  theme_classic()
+
+
+ggplot(Ortho_fish_CN_TPM,aes(x=ortho_fish_group,y=mean_of_means_TPM_2G, color=ortho_fish_group))+
+  geom_point(position = "jitter", stroke=0, size=2)+
+  scale_color_manual(values=c("#003f5c", "#A4A4A4", "#ffa600"))+
+  stat_summary(fun.y = median, fun.ymin = median, fun.ymax = median,
+                 geom = "crossbar", width = 0.8, color="red")+
+  ggtitle("Ortho_fish content TPM",subtitle = "1:2=1|1:4=4.78e-13|2:4=4.123e-13")+
+  theme_classic()
+
+# Slope low
+summary(lm(Ortho_fish_CN_TPM[Ortho_fish_CN_TPM$ortho_fish_group=="1",]$avg_log_CN~
+     Ortho_fish_CN_TPM[Ortho_fish_CN_TPM$ortho_fish_group=="1",]$mean_of_means_TPM_2G))
+# Slope 0.4216
+# p-val: < 2.2e-16
+
+# Slope mid
+summary(lm(Ortho_fish_CN_TPM[Ortho_fish_CN_TPM$ortho_fish_group=="2",]$avg_log_CN~
+     Ortho_fish_CN_TPM[Ortho_fish_CN_TPM$ortho_fish_group=="2",]$mean_of_means_TPM_2G))
+# Slope 0.474
+# p-val: < 2.2e-16
+
+# Slope high
+summary(lm(Ortho_fish_CN_TPM[Ortho_fish_CN_TPM$ortho_fish_group=="4",]$avg_log_CN~
+     Ortho_fish_CN_TPM[Ortho_fish_CN_TPM$ortho_fish_group=="4",]$mean_of_means_TPM_2G))
+# Slope 0.7937
+# p-val: < 2.2e-16
+
+
+min(Ortho_fish_CN_TPM[Ortho_fish_CN_TPM$ortho_fish_group=="1",]$ortho_fish) # 2.87
+max(Ortho_fish_CN_TPM[Ortho_fish_CN_TPM$ortho_fish_group=="1",]$ortho_fish) # 50
+
+min(Ortho_fish_CN_TPM[Ortho_fish_CN_TPM$ortho_fish_group=="2",]$ortho_fish) # 50
+max(Ortho_fish_CN_TPM[Ortho_fish_CN_TPM$ortho_fish_group=="2",]$ortho_fish) # 76.8844
+
+min(Ortho_fish_CN_TPM[Ortho_fish_CN_TPM$ortho_fish_group=="4",]$ortho_fish) #76.9
+max(Ortho_fish_CN_TPM[Ortho_fish_CN_TPM$ortho_fish_group=="4",]$ortho_fish) # 100
+
+write.table(Ortho_fish_CN_TPM, "Ortho_fish_CN_TPM.csv", sep=";", dec=",", row.names = F)
+
+```
+
+### histogram convservation with Fish
+```{r histogram convservation with Fish}
+
+ggplot(Ortho_fish_CN_TPM, aes(x=ortho_fish, fill=ortho_fish_group))+
+  geom_histogram(binwidth = 2)+
+  scale_fill_manual(values=c("#003f5c", "#A4A4A4", "#ffa600"))+
+  scale_y_continuous(expand = c(0,0), limits = c(0,200))+
+  theme_classic()
+  
+
+
+```
+
+
+## GC content of genes
+```{r GC content in RNA-protein}
+
+GC <- read.delim("/home/ben/Analysis/mRNA-Prot_integration/GC_content_hg38p13.txt",sep="\t")
+
+
+dim(GC[GC$Gene.name %in% CN_TPM_2G$ID,])
+
+GC <- ddply(GC,"Gene.name", numcolwise(mean,na.rm=TRUE),.drop = F)
+
+GC_CN_TPM <- merge(GC,CN_TPM_2G,by.y="ID",by.x="Gene.name",all.y = T)
+
+col_fun = colorRamp2(c(-3, -1.5, 0, 1.5, 3), c("#053061","#579EC9","#FFFFFF","#D96651","#67001F"))
+
+GC_CN_TPM$GC <- GC_CN_TPM$Gene...GC.content
+
+
+
+## Quartile cut ##
+GC_CN_TPM <- GC_CN_TPM %>% mutate(GC_group = ntile(GC, 4))
+#GC_CN_TPM <- subset(GC_CN_TPM, !GC_CN_TPM$GC_group=="NA")
+table(GC_CN_TPM$GC_group)
+GC_CN_TPM$GC_group[GC_CN_TPM$GC_group=="3"]="2"
+
+
+
+min(GC_CN_TPM[GC_CN_TPM$GC_group=="4",]$Gene...GC.content)
+max(GC_CN_TPM[GC_CN_TPM$GC_group=="4",]$Gene...GC.content)
+
+ggplot(GC_CN_TPM, aes(x=mean_of_means_TPM_2G,y=avg_log_CN, color=GC_group ))+
+  geom_point(data=GC_CN_TPM, stroke=0, size=2)+
+  scale_color_manual(values=c("#003f5c", "#A4A4A4", "#ffa600"))+
+  geom_smooth(data= GC_CN_TPM[GC_CN_TPM$GC_group=="1",],method = "lm", color="#003f5c")+
+  geom_smooth(data= GC_CN_TPM[GC_CN_TPM$GC_group=="2",],method = "lm", color="#A4A4A4")+
+  geom_smooth(data= GC_CN_TPM[GC_CN_TPM$GC_group=="4",],method = "lm", color="#ffa600")+
+  theme_classic()+
+  scale_x_continuous(limits = c(-1,5),expand = c(0,0), breaks = c(-1,1,3,5))+
+  scale_y_continuous(limits = c(2,8),expand = c(0,0), breaks = c(2,4,6,8))+
+  ggtitle("GC content",subtitle = "slope= 1:0.4268 | 2:0.6322 | 4:0.6608")
+
+
+
+## t.test CN ##
+t.test(GC_CN_TPM$avg_log_CN[GC_CN_TPM$GC_group=="1"],GC_CN_TPM$avg_log_CN[GC_CN_TPM$GC_group=="2"])
+p.adjust(p=2.2e-16,n=2564.8, method = "BH")# Padj= 5.64256e-13
+
+t.test(GC_CN_TPM$avg_log_CN[GC_CN_TPM$GC_group=="1"],GC_CN_TPM$avg_log_CN[GC_CN_TPM$GC_group=="4"])
+p.adjust(p=4.051e-12,n=2255.3, method = "BH")# Padj= 9.13622e-09
+
+t.test(GC_CN_TPM$avg_log_CN[GC_CN_TPM$GC_group=="2"],GC_CN_TPM$avg_log_CN[GC_CN_TPM$GC_group=="4"])
+p.adjust(p=0.1324,n=2327.1, method = "BH")# Padj= 1
+
+
+
+
+## t.test TPM ##
+t.test(GC_CN_TPM$mean_of_means_TPM_2G[GC_CN_TPM$GC_group=="1"],GC_CN_TPM$mean_of_means_TPM_2G[GC_CN_TPM$GC_group=="2"])
+p.adjust(p=1.014e-15,n=2581.8, method = "BH")# Padj= 2.617945e-12
+
+t.test(GC_CN_TPM$mean_of_means_TPM_2G[GC_CN_TPM$GC_group=="1"],GC_CN_TPM$mean_of_means_TPM_2G[GC_CN_TPM$GC_group=="4"])
+p.adjust(p=2.2e-16,n=2232.8, method = "BH")# Padj= 4.91216e-13
+
+t.test(GC_CN_TPM$mean_of_means_TPM_2G[GC_CN_TPM$GC_group=="2"],GC_CN_TPM$mean_of_means_TPM_2G[GC_CN_TPM$GC_group=="4"])
+p.adjust(p=0.002519,n=2260.3, method = "BH")# Padj= 1
+
+
+
+
+
+ggplot(GC_CN_TPM,aes(x=GC_group,y=avg_log_CN, color=GC_group))+
+  scale_color_manual(values=c("#003f5c", "#A4A4A4", "#ffa600"))+
+  geom_point(position = "jitter", stroke=0, size=2)+
+  stat_summary(fun.y = median, fun.ymin = median, fun.ymax = median,
+                 geom = "crossbar", width = 0.8, color="red")+
+  ggtitle("GC content CN",subtitle = "1:2=5.64e-13|1:4=9.13e-09|2:4=1")+
+  scale_y_continuous(expand = c(0,0), limits = c(2,8))+
+  theme_classic()
+
+
+ggplot(GC_CN_TPM,aes(x=GC_group,y=mean_of_means_TPM_2G, color= GC_group))+
+  scale_color_manual(values=c("#003f5c", "#A4A4A4", "#ffa600"))+
+  geom_point(position = "jitter", stroke=0, size=2)+
+  stat_summary(fun.y = median, fun.ymin = median, fun.ymax = median,
+                 geom = "crossbar", width = 0.8, color="red")+
+  ggtitle("GC content TPM",subtitle = "1:2=2.62e-12|1:4=4.9e-13|2:4=1")+
+  theme_classic()
+  
+
+
+# Slope low
+summary(lm(GC_CN_TPM[GC_CN_TPM$GC_group=="1",]$avg_log_CN~
+     GC_CN_TPM[GC_CN_TPM$GC_group=="1",]$mean_of_means_TPM_2G))
+# Slope 0.4268
+# p-value: < 2.2e-16
+
+# Slope mid
+summary(lm(GC_CN_TPM[GC_CN_TPM$GC_group=="2",]$avg_log_CN~
+     GC_CN_TPM[GC_CN_TPM$GC_group=="2",]$mean_of_means_TPM_2G))
+# Slope 0.6322
+# p-value: < 2.2e-16
+
+# Slope high
+summary(lm(GC_CN_TPM[GC_CN_TPM$GC_group=="4",]$avg_log_CN~
+     GC_CN_TPM[GC_CN_TPM$GC_group=="4",]$mean_of_means_TPM_2G))
+# Slope 0.6608
+# p-value: < 2.2e-16
+
+dim(GC_CN_TPM)
+
+write.table(GC_CN_TPM, "GC_CN_TPM.csv", sep=";", dec=",", row.names = F)
+
+```
+
+### Histogram GC content
+```{r Histogram GC content}
+
+ggplot(GC_CN_TPM, aes(x=Gene...GC.content, fill= GC_group))+
+  geom_histogram(binwidth = 2)+
+  scale_fill_manual(values=c("#003f5c", "#A4A4A4", "#ffa600"))+
+  scale_y_continuous(expand = c(0,0), limits = c(0,800))+
+  scale_x_continuous(expand = c(0,0), limits = c(0,100))+
+  theme_classic()
+
+```
+
+
+## 3'UTR length
+```{r 3UTR length}
+
+UTRs_old <- read.delim("/home/ben/Analysis/mRNA-Prot_integration/mart_export_5_and_3UTR_2.txt",sep=",")
+Gene_wise_ARE_list <- read.delim("/home/ben/Analysis/mRNA-Prot_integration/3UTR_length_and_ARE_list_from_sequences.csv",sep=";",dec=",")
+
+dim(UTRs_old)
+
+
+dim(UTRs_old[UTRs_old$Gene.name %in% CN_TPM_2G$ID,])
+dim(Gene_wise_ARE_list[Gene_wise_ARE_list$ID %in% CN_TPM_2G$ID,])
+UTRs_old[is.na(UTRs_old)]=0
+
+UTRs_old <- subset(UTRs_old,UTRs_old$X5..UTR.start>0 & UTRs_old$X5..UTR.end>0 |
+                     UTRs_old$X3..UTR.start>0 & UTRs_old$X3..UTR.end>0)
+
+
+
+UTRs_old$length3UTR <- mapply("-",UTRs_old$X3..UTR.end,UTRs_old$X3..UTR.start)
+UTRs_old$length5UTR <- mapply("-",UTRs_old$X5..UTR.end,UTRs_old$X5..UTR.start)
+UTRs_old$lengthUTRs <- mapply("-",UTRs_old$Transcript.length..including.UTRs.and.CDS.,UTRs_old$CDS.Length)
+UTRs_old$lengthUTRs_est <- mapply("+",UTRs_old$length3UTR,UTRs_old$length5UTR)
+
+UTR3_old <- subset(UTRs_old, UTRs_old$X3..UTR.start>0 &UTRs_old$X3..UTR.end>0)
+UTR5_old <- subset(UTRs_old, UTRs_old$X5..UTR.start>0 &UTRs_old$X5..UTR.end>0)
+
+UTR3_old <- ddply(UTR3_old,"Gene.name", numcolwise(mean),.drop = F)
+UTR5_old <- ddply(UTR5_old,"Gene.name", numcolwise(mean),.drop = F)
+
+UTR_annot_compare <- merge(UTR3_old,Gene_wise_ARE_list,by.x="Gene.name", by.y="ID", all=T)
+
+
+plot(UTR_annot_compare$length3UTR,UTR_annot_compare$UTR3_length)
+
+
+
+
+UTRs_CN_TPM <- merge(Gene_wise_ARE_list,CN_TPM_2G,by.y="ID",by.x="ID",all.y = T)
+
+dim(UTRs_CN_TPM)
+dim(subset(UTRs_CN_TPM, !UTRs_CN_TPM$length3UTR_group=="NA"))
+
+
+
+summary(UTRs_CN_TPM$UTR3_length)
+UTRs_CN_TPM[is.na(UTRs_CN_TPM$UTR3_length),]
+UTRs_CN_TPM$UTR3_length <- ifelse(is.na(UTRs_CN_TPM$UTR3_length)==TRUE,0,UTRs_CN_TPM$UTR3_length)
+
+
+## quartile cut ##
+UTRs_CN_TPM <- UTRs_CN_TPM %>% mutate(length3UTR_group = ntile(UTR3_length, 4))
+#UTRs_CN_TPM <- subset(UTRs_CN_TPM, !UTRs_CN_TPM$length3UTR_group=="NA")
+table(UTRs_CN_TPM$length3UTR_group)
+UTRs_CN_TPM$length3UTR_group[UTRs_CN_TPM$length3UTR_group=="3"]="2"
+
+
+ggplot(UTRs_CN_TPM, aes(x=mean_of_means_TPM_2G,y=avg_log_CN, color=length3UTR_group ))+
+  geom_point(data=UTRs_CN_TPM, stroke=0, size=2)+
+  scale_color_manual(values=c("#003f5c", "#A4A4A4", "#ffa600"))+
+  geom_smooth(data= UTRs_CN_TPM[UTRs_CN_TPM$length3UTR_group=="1",],method = "lm", color="#003f5c")+
+  geom_smooth(data= UTRs_CN_TPM[UTRs_CN_TPM$length3UTR_group=="2",],method = "lm", color="#A4A4A4")+
+  geom_smooth(data= UTRs_CN_TPM[UTRs_CN_TPM$length3UTR_group=="4",],method = "lm", color="#ffa600")+
+  theme_classic()+
+  scale_x_continuous(limits = c(-1,5),expand = c(0,0), breaks = c(-1,1,3,5))+
+  scale_y_continuous(limits = c(2,8),expand = c(0,0), breaks = c(2,4,6,8))+
+  ggtitle("3UTR length",subtitle = "slope= 1:0.7216 | 2:0.6314 | 4:0.437")
+
+  
+## t.test CN ##
+t.test(UTRs_CN_TPM$avg_log_CN[UTRs_CN_TPM$length3UTR_group=="1"],UTRs_CN_TPM$avg_log_CN[UTRs_CN_TPM$length3UTR_group=="2"])
+p.adjust(p=0.595,n=2195.1, method = "BH")# Padj= 1
+
+t.test(UTRs_CN_TPM$avg_log_CN[UTRs_CN_TPM$length3UTR_group=="1"],UTRs_CN_TPM$avg_log_CN[UTRs_CN_TPM$length3UTR_group=="4"])
+p.adjust(p=3.733e-06,n=2251.3, method = "BH")# Padj= 0.008404103
+
+t.test(UTRs_CN_TPM$avg_log_CN[UTRs_CN_TPM$length3UTR_group=="2"],UTRs_CN_TPM$avg_log_CN[UTRs_CN_TPM$length3UTR_group=="4"])
+p.adjust(p=6.847e-07,n=2436.4, method = "BH")# Padj= 0.001668203
+
+
+
+
+## t.test TPM ##
+t.test(UTRs_CN_TPM$mean_of_means_TPM_2G[UTRs_CN_TPM$length3UTR_group=="1"],UTRs_CN_TPM$mean_of_means_TPM_2G[UTRs_CN_TPM$length3UTR_group=="2"])
+p.adjust(p=0.006668,n=2256.9, method = "BH")# Padj= 1
+
+t.test(UTRs_CN_TPM$mean_of_means_TPM_2G[UTRs_CN_TPM$length3UTR_group=="1"],UTRs_CN_TPM$mean_of_means_TPM_2G[UTRs_CN_TPM$length3UTR_group=="4"])
+p.adjust(p=1.216e-09,n=2281.1, method = "BH")# Padj= 2.773818e-06
+
+t.test(UTRs_CN_TPM$mean_of_means_TPM_2G[UTRs_CN_TPM$length3UTR_group=="2"],UTRs_CN_TPM$mean_of_means_TPM_2G[UTRs_CN_TPM$length3UTR_group=="4"])
+p.adjust(p=1.422e-05,n=2296.1, method = "BH")# 0.03265054
+
+
+ggplot(UTRs_CN_TPM,aes(x=length3UTR_group,y=avg_log_CN, color=length3UTR_group))+
+  geom_point(position = "jitter")+
+  scale_color_manual(values=c("#003f5c", "#A4A4A4", "#ffa600"))+
+  stat_summary(fun.y = median, fun.ymin = median, fun.ymax = median,
+                 geom = "crossbar", width = 0.8, color="red")+
+  ggtitle("3UTR length CN",subtitle = "Padj= 1:2=1 | 1:4=0.0084 | 2:4=0.0016")+
+  theme_classic()+
+  scale_y_continuous(expand = c(0,0), limits = c(3,10))
+
+
+ggplot(UTRs_CN_TPM,aes(x=length3UTR_group,y=mean_of_means_TPM_2G, color=length3UTR_group))+
+  geom_point(position = "jitter")+
+  scale_color_manual(values=c("#003f5c", "#A4A4A4", "#ffa600"))+
+  stat_summary(fun.y = median, fun.ymin = median, fun.ymax = median,
+                 geom = "crossbar", width = 0.8, color="red")+
+  ggtitle("3UTR length TPM",subtitle = "1:2=1|1:4=2.77e-06|2:4=0.033")+
+  theme_classic()+
+  scale_y_continuous(expand = c(0,0), limits = c(-1,4.1), breaks = c(0,2,4))
+
+
+
+# Slope small 3UTR
+summary(lm(UTRs_CN_TPM[UTRs_CN_TPM$length3UTR_group=="1",]$avg_log_CN~
+     UTRs_CN_TPM[UTRs_CN_TPM$length3UTR_group=="1",]$mean_of_means_TPM_2G))
+# Slope 0.7216
+# p-value: < 2.2e-16
+
+# Slope mid 3UTR
+summary(lm(UTRs_CN_TPM[UTRs_CN_TPM$length3UTR_group=="2",]$avg_log_CN~
+     UTRs_CN_TPM[UTRs_CN_TPM$length3UTR_group=="2",]$mean_of_means_TPM_2G))
+# Slope 0.6314
+# p-value: < 2.2e-16
+
+# Slope long 3UTR
+summary(lm(UTRs_CN_TPM[UTRs_CN_TPM$length3UTR_group=="4",]$avg_log_CN~
+     UTRs_CN_TPM[UTRs_CN_TPM$length3UTR_group=="4",]$mean_of_means_TPM_2G))
+# Slope 0.437
+# p-value: < 2.2e-16
+
+
+write.table(UTRs_CN_TPM, "UTRs_CN_TPM.csv", sep=";", dec=",", row.names = F)
+
+
+
+
+### exploration : 
+
+ggplot(UTRs_CN_TPM,aes(x=log10(UTR3_length),y=mean_of_means_TPM_2G))+
+  geom_point()+
+  geom_smooth(method = "lm")+
+  theme_classic()
+  #scale_y_continuous(expand = c(0,0), limits = c(-1,4.1), breaks = c(0,2,4))
+
+UTRs_CN_TPM$UTR3_length_log <- log10(UTRs_CN_TPM$UTR3_length)
+UTRs_CN_TPM <- do.call(data.frame,lapply(UTRs_CN_TPM,function(x) replace(x, is.infinite(x),NA)))
+
+lm(UTRs_CN_TPM$UTR3_length_log~UTRs_CN_TPM$mean_of_means_TPM_2G,na.action = na.omit) # -0.1121
+10^-0.1121
+
+
+ggplot(UTRs_CN_TPM,aes(x=(ARE_counts),y=mean_of_means_TPM_2G))+
+  geom_point()+
+  geom_smooth(method = "lm")+
+  theme_classic()
+
+
+ggplot(UTRs_CN_TPM,aes(x=(ARE_counts),y=avg_log_CN))+
+  geom_point()+
+  geom_smooth(method = "lm")+
+  theme_classic()
+
+ARE_CN_lm <- lm(UTRs_CN_TPM$ARE_counts~UTRs_CN_TPM$avg_log_CN)
+summary(ARE_CN_lm)
+p.adjust(1.02e-14,n= 4544,method = "BH") # 4.63488e-11 The slope is significant!
+
+ARE_CN_corc <- cor(UTRs_CN_TPM$ARE_counts,UTRs_CN_TPM$avg_log_CN,use = "pairwise.complete.obs",method = "pear")
+
+```
+
+### Histogram 3'UTR length
+```{r Histogram 3UTR length}
+
+ggplot(UTRs_CN_TPM, aes(x=log10(length3UTR), fill= length3UTR_group))+
+  geom_histogram(binwidth = 0.05)+
+  scale_fill_manual(values=c("#003f5c", "#A4A4A4", "#ffa600"))+
+  scale_y_continuous(expand = c(0,0), limits = c(0,150))+
+  scale_x_continuous(expand = c(0,0), limits = c(0,5))+
+  theme_classic()
+
+```
+
+## 5'UTR length
+```{r 5UTR length}
+### 5UTR ###
+
+UTR5_CN_TPM <- merge(UTR_annot_compare,CN_TPM_2G,by.x="Gene.name",by.y="ID",all.y = T)
+
+dim(UTR5_CN_TPM)
+dim(subset(UTR5_CN_TPM, !UTR5_CN_TPM$length5UTR=="NA"))
+
+summary(UTR5_CN_TPM$length5UTR)
+UTR5_CN_TPM[is.na(UTR5_CN_TPM$length5UTR),]
+UTR5_CN_TPM$length5UTR <- ifelse(is.na(UTR5_CN_TPM$length5UTR)==TRUE,0,UTR5_CN_TPM$length5UTR)
+
+
+
+## quartile cut ##
+UTR5_CN_TPM <- UTR5_CN_TPM %>% mutate(length5UTR_group = ntile(length5UTR, 4))
+#UTR5_CN_TPM <- subset(UTR5_CN_TPM, !UTR5_CN_TPM$length5UTR_group=="NA")
+table(UTR5_CN_TPM$length5UTR_group)
+UTR5_CN_TPM$length5UTR_group[UTR5_CN_TPM$length5UTR_group=="3"]="2"
+dim(UTR5_CN_TPM)
+
+# write.table(UTR5_CN_TPM, "UTR5_CN_TPM.csv", sep=";", dec=",", row.names = F)
+
+
+ggplot(UTR5_CN_TPM, aes(x=mean_of_means_TPM_2G,y=avg_log_CN, color=length5UTR_group ))+
+  geom_point(data=UTR5_CN_TPM, stroke=0, size=2)+
+  scale_color_manual(values=c("#003f5c", "#A4A4A4", "#ffa600"))+
+  geom_smooth(data= UTR5_CN_TPM[UTR5_CN_TPM$length5UTR_group=="1",],method = "lm", color="#003f5c")+
+  geom_smooth(data= UTR5_CN_TPM[UTR5_CN_TPM$length5UTR_group=="2",],method = "lm", color="#A4A4A4")+
+  geom_smooth(data= UTR5_CN_TPM[UTR5_CN_TPM$length5UTR_group=="4",],method = "lm", color="#ffa600")+
+  theme_classic()+
+  scale_x_continuous(limits = c(-1,5),expand = c(0,0), breaks = c(-1,1,3,5))+
+  scale_y_continuous(limits = c(2,8),expand = c(0,0), breaks = c(2,4,6,8))+
+  ggtitle("5UTR length",subtitle = "slope= 1:0.6855 | 2:0.6099 | 4:0.5292")
+
+
+
+## t.test CN ##
+t.test(UTR5_CN_TPM$avg_log_CN[UTR5_CN_TPM$length5UTR_group=="1"],UTR5_CN_TPM$avg_log_CN[UTR5_CN_TPM$length5UTR_group=="2"])
+p.adjust(p=0.03012,n=2212.2, method = "BH")# Padj= 1
+
+t.test(UTR5_CN_TPM$avg_log_CN[UTR5_CN_TPM$length5UTR_group=="1"],UTR5_CN_TPM$avg_log_CN[UTR5_CN_TPM$length5UTR_group=="4"])
+p.adjust(p=1.072e-06,n=2271.4, method = "BH")# Padj= 0.002434941
+
+t.test(UTR5_CN_TPM$avg_log_CN[UTR5_CN_TPM$length5UTR_group=="2"],UTR5_CN_TPM$avg_log_CN[UTR5_CN_TPM$length5UTR_group=="4"])
+p.adjust(p=0.0004496,n=2504.4, method = "BH")# Padj= 1
+
+
+
+## t.test TPM ##
+t.test(UTR5_CN_TPM$mean_of_means_TPM_2G[UTR5_CN_TPM$length5UTR_group=="1"],UTR5_CN_TPM$mean_of_means_TPM_2G[UTR5_CN_TPM$length5UTR_group=="2"])
+p.adjust(p=0.1594,n=2234.7, method = "BH")# Padj= 1
+
+t.test(UTR5_CN_TPM$mean_of_means_TPM_2G[UTR5_CN_TPM$length5UTR_group=="1"],UTR5_CN_TPM$mean_of_means_TPM_2G[UTR5_CN_TPM$length5UTR_group=="4"])
+p.adjust(p=0.6265,n=2274.4, method = "BH")# Padj= 1
+
+t.test(UTR5_CN_TPM$mean_of_means_TPM_2G[UTR5_CN_TPM$length5UTR_group=="2"],UTR5_CN_TPM$mean_of_means_TPM_2G[UTR5_CN_TPM$length5UTR_group=="4"])
+p.adjust(p=0.3732,n=2353, method = "BH")# Padj= 1
+
+
+ggplot(UTR5_CN_TPM,aes(x=length5UTR_group,y=avg_log_CN, color=length5UTR_group))+
+  geom_point(position = "jitter")+
+  scale_color_manual(values=c("#003f5c", "#A4A4A4", "#ffa600"))+
+  stat_summary(fun.y = median, fun.ymin = median, fun.ymax = median,
+                 geom = "crossbar", width = 0.8, color="red")+
+  ggtitle("5UTR length CN",subtitle = "1:2=1|1:4=0.002434941|2:4=1")+
+  theme_classic()
+
+
+ggplot(UTR5_CN_TPM,aes(x=length5UTR_group,y=mean_of_means_TPM_2G, color=length5UTR_group))+
+  geom_point(position = "jitter")+
+  scale_color_manual(values=c("#003f5c", "#A4A4A4", "#ffa600"))+
+  stat_summary(fun.y = median, fun.ymin = median, fun.ymax = median,
+                 geom = "crossbar", width = 0.8, color="red")+
+  ggtitle("5UTR length TPM",subtitle = "Padj= 1")+
+  theme_classic()
+
+
+
+# Slope small 5UTR
+summary(lm(UTR5_CN_TPM[UTR5_CN_TPM$length5UTR_group=="1",]$avg_log_CN~
+     UTR5_CN_TPM[UTR5_CN_TPM$length5UTR_group=="1",]$mean_of_means_TPM_2G))
+# Slope 0.6855
+# p-value: < 2.2e-16
+
+# Slope mid 5UTR
+summary(lm(UTR5_CN_TPM[UTR5_CN_TPM$length5UTR_group=="2",]$avg_log_CN~
+     UTR5_CN_TPM[UTR5_CN_TPM$length5UTR_group=="2",]$mean_of_means_TPM_2G))
+# Slope 0.6099
+# p-value: < 2.2e-16
+
+# Slope long 5UTR
+summary(lm(UTR5_CN_TPM[UTR5_CN_TPM$length5UTR_group=="4",]$avg_log_CN~
+     UTR5_CN_TPM[UTR5_CN_TPM$length5UTR_group=="4",]$mean_of_means_TPM_2G))
+# Slope 0.5292
+# p-value: < 2.2e-16
+
+```
+
+
+### Histogram 5'UTR length
+```{r Histogram 5UTR length}
+
+ggplot(UTRs_CN_TPM, aes(x=log10(length5UTR), fill= length5UTR_group))+
+  geom_histogram(binwidth = 0.05)+
+  scale_fill_manual(values=c("#003f5c", "#A4A4A4", "#ffa600"))+
+  scale_y_continuous(expand = c(0,0), limits = c(0,300))+
+  scale_x_continuous(expand = c(0,0), limits = c(0,4))+
+  theme_classic()
+
+```
+
+
+## AU-rich elements
+```{r AU-rich elements}
+AREs <- read.delim("/home/ben/Analysis/mRNA-Prot_integration/Complete_3UTR_Data_ARED_PLUS.csv", sep=";")
+
+
+dim(CN_TPM_2G[AREs$X...GeneName %in% CN_TPM_2G$ID,])
+
+
+AREs_CN_TPM <- merge(AREs,CN_TPM_2G,by.y="ID",by.x="GeneName",all.y = T)
+AREs_CN_TPM$Cluster[is.na(AREs_CN_TPM$Cluster)]=0
+col_fun = colorRamp2(c(-3, -1.5, 0, 1.5, 3), c("#053061","#579EC9","#FFFFFF","#D96651","#67001F"))
+AREs_CN_TPM$Cluster[AREs_CN_TPM$Cluster>1]=">1"
+
+
+AREs_CN_TPM$ARE<-"NO_ARE"
+AREs_CN_TPM$ARE[AREs_CN_TPM$X...GeneName %in% AREs$X...GeneName]="ARE"
+
+table(AREs_CN_TPM$Cluster)
+
+
+ggplot(AREs_CN_TPM, aes(x=mean_of_means_TPM_2G,y=avg_log_CN, color=Cluster ))+
+  geom_point(data=AREs_CN_TPM, stroke=0, size=2)+
+  scale_color_manual(values=c("#A4A4A4", "#003f5c", "#ffa600"))+
+  geom_smooth(data= AREs_CN_TPM[AREs_CN_TPM$Cluster=="1",],method = "lm", color="#003f5c")+
+  geom_smooth(data= AREs_CN_TPM[AREs_CN_TPM$Cluster=="0",],method = "lm", color="#A4A4A4")+
+  geom_smooth(data= AREs_CN_TPM[AREs_CN_TPM$Cluster==">1",],method = "lm", color="#ffa600")+
+  theme_classic()+
+  scale_x_continuous(limits = c(-1,5),expand = c(0,0), breaks = c(-1,1,3,5))+
+  scale_y_continuous(limits = c(2,8),expand = c(0,0), breaks = c(2,4,6,8))+
+  ggtitle("ARE cluster size",subtitle = "slope=1:0.676|2:0.4378|>1:0.3414")
+
+
+
+
+
+t.test(AREs_CN_TPM$avg_log_CN[AREs_CN_TPM$Cluster=="0"],AREs_CN_TPM$avg_log_CN[AREs_CN_TPM$Cluster=="1"])
+p.adjust(p=2.2e-16,n=1854.3, method = "BH")# Padj= 4.07946e-13
+t.test(AREs_CN_TPM$avg_log_CN[AREs_CN_TPM$Cluster=="0"],AREs_CN_TPM$avg_log_CN[AREs_CN_TPM$Cluster==">1"])
+p.adjust(p=2.363e-05,n=191.92, method = "BH")# Padj= 0.00453507
+t.test(AREs_CN_TPM$avg_log_CN[AREs_CN_TPM$Cluster=="1"],AREs_CN_TPM$avg_log_CN[AREs_CN_TPM$Cluster==">1"])
+p.adjust(p=0.7725,n=237.28, method = "BH")# Padj= 1
+
+
+t.test(AREs_CN_TPM$mean_of_means_TPM_2G[AREs_CN_TPM$Cluster=="0"],AREs_CN_TPM$mean_of_means_TPM_2G[AREs_CN_TPM$Cluster=="1"])
+p.adjust(p=0.0239,n=1955, method = "BH")# Padj= 1
+t.test(AREs_CN_TPM$mean_of_means_TPM_2G[AREs_CN_TPM$Cluster=="0"],AREs_CN_TPM$mean_of_means_TPM_2G[AREs_CN_TPM$Cluster==">1"])
+p.adjust(p=0.9662,n=195, method = "BH")# Padj= 1
+t.test(AREs_CN_TPM$mean_of_means_TPM_2G[AREs_CN_TPM$Cluster=="1"],AREs_CN_TPM$mean_of_means_TPM_2G[AREs_CN_TPM$Cluster==">1"])
+p.adjust(p=0.3854,n=232, method = "BH")# Padj= 1
+
+
+ggplot(AREs_CN_TPM,aes(x=Cluster,y=avg_log_CN, color=Cluster))+
+  geom_point(stroke=0,size=2,position = "jitter")+
+  scale_color_manual(values=c("#003f5c", "#A4A4A4", "#ffa600"))+
+  stat_summary(fun.y = median, fun.ymin = median, fun.ymax = median,
+                 geom = "crossbar", width = 0.8, color="red")+
+  ggtitle("AREs content CN",subtitle = "Padj(0-1)= 4.3868e-13 | Padj(0->1)= 0.009034")+
+  theme_classic()
+
+# t.test(AREs_CN_TPM$avg_log_CN[AREs_CN_TPM$Cluster=="0"],AREs_CN_TPM$avg_log_CN[AREs_CN_TPM$Cluster=="1"])
+# p.adjust(p=2.2e-16,n=1994, method = "BH")# Padj= 4.3868e-13
+# t.test(AREs_CN_TPM$avg_log_CN[AREs_CN_TPM$Cluster=="0"],AREs_CN_TPM$avg_log_CN[AREs_CN_TPM$Cluster==">1"])
+# p.adjust(p=4.517e-05,n=200, method = "BH")# Padj= 0.009034
+
+AREs_TPM <- merge(AREs,TPM_2G_dist,by.y="ID",by.x="GeneName",all.y = T)
+AREs_TPM$Cluster[is.na(AREs_TPM$Cluster)]=0
+AREs_TPM$Cluster[AREs_TPM$Cluster>1]=">1"
+
+ggplot(AREs_CN_TPM,aes(x=Cluster,y=mean_of_means_TPM_2G, color=Cluster))+
+  geom_point(stroke=0,size=2,position = "jitter")+
+  scale_color_manual(values=c("#FFC300", "#FF5733", "#581845"))+  
+  stat_summary(fun.y = median, fun.ymin = median, fun.ymax = median,
+                 geom = "crossbar", width = 0.8, color="red")+
+  ggtitle("AREs content TPM",subtitle = "Padj= 1")+
+  scale_y_continuous(limits = c(-1,4.5),expand = c(0,0), breaks = c(0,2,4))+
+  theme_classic()
+
+
+t.test(AREs_CN_TPM$mean_of_means_TPM_2G[AREs_CN_TPM$Cluster=="0"],AREs_CN_TPM$mean_of_means_TPM_2G[AREs_CN_TPM$Cluster=="1"])
+p.adjust(p=0.008592,n=1790.5, method = "BH")# Padj= 1
+t.test(AREs_CN_TPM$mean_of_means_TPM_2G[AREs_CN_TPM$Cluster=="0"],AREs_CN_TPM$mean_of_means_TPM_2G[AREs_CN_TPM$Cluster==">1"])
+p.adjust(p=0.4269,n=184.05, method = "BH")# Padj= 1
+t.test(AREs_CN_TPM$mean_of_means_TPM_2G[AREs_CN_TPM$Cluster=="1"],AREs_CN_TPM$mean_of_means_TPM_2G[AREs_CN_TPM$Cluster==">1"])
+p.adjust(p=0.7973,n=216.4, method = "BH")# Padj= 1
+
+
+# Slope 0 ARE
+summary(lm(AREs_CN_TPM[AREs_CN_TPM$Cluster=="0",]$avg_log_CN~
+     AREs_CN_TPM[AREs_CN_TPM$Cluster=="0",]$mean_of_means_TPM_2G))
+# Slope 0.676
+# p-value: < 2.2e-16
+
+# Slope 1 ARE
+summary(lm(AREs_CN_TPM[AREs_CN_TPM$Cluster=="1",]$avg_log_CN~
+     AREs_CN_TPM[AREs_CN_TPM$Cluster=="1",]$mean_of_means_TPM_2G))
+# Slope 0.4378
+# p-value: < 2.2e-16
+
+# Slope >1 ARE
+summary(lm(AREs_CN_TPM[AREs_CN_TPM$Cluster==">1",]$avg_log_CN~
+     AREs_CN_TPM[AREs_CN_TPM$Cluster==">1",]$mean_of_means_TPM_2G))
+# Slope 0.3414
+# p-value: 2.144e-06
+
+
+#write.table(AREs_CN_TPM,"AREs_CN_TPM_2G.csv", sep=";", dec=",", row.names = F)
+
+
+```
+
+
+## AREs in secreted molecules
+```{r ARE in secreted}
+secreted <- read.delim("/home/ben/Analysis/RF_human/Gene_class_lists/Secreted_protein_filtered copy.csv", sep=";", header = T)
+colnames(secreted) <- "ID"
+secreted_ref <- secreted
+
+head(secreted)
+dim(secreted)
+#secreted <- distinct(secreted, Gene , .keep_all = T)
+secreted <- merge(CN_TPM_2G,secreted,by.x="ID",by.y="ID")
+head(secreted)
+dim(secreted)
+    
+secreted_AREs <- merge(AREs,secreted, by.x="GeneName", by.y="ID", all.y=T)
+dim(secreted_AREs)
+
+secreted_AREs$Cluster_col[is.na(secreted_AREs$Cluster)]="0ARE"
+secreted_AREs$Cluster_col[secreted_AREs$Cluster==1]="1ARE"
+secreted_AREs$Cluster_col[secreted_AREs$Cluster>1]=">1ARE"
+secreted_AREs <- data.frame(secreted_AREs)
+
+ggplot(secreted_AREs, aes(x=mean_of_means_TPM_2G,y=avg_log_CN, color=Cluster_col, ))+
+  geom_point(data=CN_TPM_2G, color="grey", stroke=0,size=2)+
+  geom_point()+
+  scale_color_manual(values=c("#FFC300", "#FF5733", "#581845"))+
+  ggrepel::geom_text_repel(data=secreted_AREs, aes(label=secreted_AREs$GeneName))+
+  theme_classic()
+
+ggplot(AREs_CN_TPM[AREs_CN_TPM$GeneName %in% secreted_AREs$GeneName,],aes(x=Cluster,y=mean_of_means_TPM_2G, color=Cluster))+
+  geom_point(stroke=0,size=2,position = "jitter")+
+  scale_color_manual(values=c("#FFC300", "#FF5733", "#581845"))+  
+  stat_summary(fun.y = median, fun.ymin = median, fun.ymax = median,
+               geom = "crossbar", width = 0.8, color="red")+
+  ggtitle("AREs content TPM",subtitle = "Padj= 1")+
+  theme_classic()
+
+ggplot(AREs_CN_TPM[AREs_CN_TPM$GeneName %in% secreted_AREs$GeneName,],aes(x=Cluster,y=avg_log_CN, color=Cluster))+
+  geom_point(stroke=0,size=2,position = "jitter")+
+  scale_color_manual(values=c("#FFC300", "#FF5733", "#581845"))+  
+  stat_summary(fun.y = median, fun.ymin = median, fun.ymax = median,
+               geom = "crossbar", width = 0.8, color="red")+
+  ggtitle("AREs content CN",subtitle = "Padj= 1")+
+  theme_classic()
+
+AREs_CN_TPM[AREs_CN_TPM$GeneName %in% secreted_AREs$GeneName,]
+t.test(AREs_CN_TPM$mean_of_means_TPM_2G[(AREs_CN_TPM$GeneName %in% secreted_AREs$GeneName) & AREs_CN_TPM$Cluster=="0"],AREs_CN_TPM$mean_of_means_TPM_2G[(AREs_CN_TPM$GeneName %in% secreted_AREs$GeneName) & AREs_CN_TPM$Cluster=="1"])
+p.adjust(p=0.02713,n=14, method = "BH")# Padj= 0.37982
+
+
+AREs_CN_TPM[AREs_CN_TPM$GeneName %in% secreted_AREs$GeneName,]
+t.test(AREs_CN_TPM$mean_of_means_TPM_2G[(AREs_CN_TPM$GeneName %in% secreted_AREs$GeneName) & AREs_CN_TPM$Cluster=="0"],AREs_CN_TPM$mean_of_means_TPM_2G[(AREs_CN_TPM$GeneName %in% secreted_AREs$GeneName) & AREs_CN_TPM$Cluster==">1"])
+p.adjust(p=0.03162,n=12, method = "BH")# Padj= 0.37944
+
+AREs_CN_TPM[AREs_CN_TPM$GeneName %in% secreted_AREs$GeneName,]
+t.test(AREs_CN_TPM$mean_of_means_TPM_2G[(AREs_CN_TPM$GeneName %in% secreted_AREs$GeneName) & AREs_CN_TPM$Cluster=="1"],AREs_CN_TPM$mean_of_means_TPM_2G[(AREs_CN_TPM$GeneName %in% secreted_AREs$GeneName) & AREs_CN_TPM$Cluster==">1"])
+p.adjust(p=0.8002,n=10, method = "BH")# Padj= 1
+
+
+AREs_CN_TPM$mean_of_means_TPM_2G[(AREs_CN_TPM$GeneName %in% secreted_AREs$GeneName) & AREs_CN_TPM$Cluster=="1"]
+
+secreted_AREs[secreted_AREs$Cluster_col==">1"]$GeneName
+
+dim(TPM_2G_AREs[(TPM_2G_AREs$ID %in% secreted_ref$ID) & TPM_2G_AREs$Cluster_col==">1",])
+
+```
+
+
+## ARE in copy numbers
+```{r total ARE in CN}
+
+CN_TPM_2G_AREs <- merge(CN_TPM_2G,AREs, by.x="ID",by.y="GeneName", all.x=T)
+
+CN_TPM_2G_AREs$Cluster[is.na(CN_TPM_2G_AREs$Cluster)]=0
+CN_TPM_2G_AREs$Cluster[CN_TPM_2G_AREs$Cluster>1]=">1"
+
+
+ggplot(CN_TPM_2G_AREs,aes(x=Cluster,y=avg_log_CN, color=Cluster))+
+  geom_point(stroke=0,size=2,position = "jitter")+
+  scale_color_manual(values=c("#FFC300", "#FF5733", "#581845"))+  
+  stat_summary(fun.y = median, fun.ymin = median, fun.ymax = median,
+                 geom = "crossbar", width = 0.8, color="red")+
+  ggtitle("AREs in CN 2G",subtitle = "Padj1= 4.0788e-13 | Padj= 0.0045")+
+  scale_y_continuous(limits = c(1.8,8))+
+  theme_classic()
+
+t.test(CN_TPM_2G_AREs$avg_log_CN[CN_TPM_2G_AREs$Cluster=="0"],CN_TPM_2G_AREs$avg_log_CN[CN_TPM_2G_AREs$Cluster=="1"])
+p.adjust(p=2.2e-16,n=1854, method = "BH")# Padj= 4.0788e-13
+t.test(CN_TPM_2G_AREs$avg_log_CN[CN_TPM_2G_AREs$Cluster=="0"],CN_TPM_2G_AREs$avg_log_CN[CN_TPM_2G_AREs$Cluster==">1"])
+p.adjust(p=2.363e-05,n=192, method = "BH") #Padj= 0.00453696
+
+# TPM #
+ggplot(CN_TPM_2G_AREs,aes(x=Cluster,y=mean_of_means_TPM_2G, color=Cluster))+
+  geom_point(stroke=0,size=2,position = "jitter")+
+  scale_color_manual(values=c("#FFC300", "#FF5733", "#581845"))+  
+  stat_summary(fun.y = median, fun.ymin = median, fun.ymax = median,
+                 geom = "crossbar", width = 0.8, color="red")+
+  ggtitle("AREs in TPM 2G",subtitle = "Padj= 1")+
+  theme_classic()
+
+t.test(CN_TPM_2G_AREs$mean_of_means_TPM_2G[CN_TPM_2G_AREs$Cluster=="0"],CN_TPM_2G_AREs$mean_of_means_TPM_2G[CN_TPM_2G_AREs$Cluster=="1"])
+p.adjust(p=0.008592,n=1790, method = "BH")# Padj= 1
+t.test(CN_TPM_2G_AREs$mean_of_means_TPM_2G[CN_TPM_2G_AREs$Cluster=="0"],CN_TPM_2G_AREs$mean_of_means_TPM_2G[CN_TPM_2G_AREs$Cluster==">1"])
+p.adjust(p=0.4269,n=184, method = "BH") # 1
+
+```
+
+
+## AREs in TPM only
+```{r ARE in TPM only}
+TPM_2G_dist_AREs <- merge(TPM_2G_dist,AREs, by.x="ID",by.y="GeneName", all.x=T)
+
+TPM_2G_dist_AREs$Cluster[is.na(TPM_2G_dist_AREs$Cluster)]=0
+TPM_2G_dist_AREs$Cluster[TPM_2G_dist_AREs$Cluster>1]=">1"
+
+ggplot(TPM_2G_dist_AREs,aes(x=Cluster,y=mean_of_means_TPM_2G, color=Cluster))+
+  geom_point(stroke=0,size=2,position = "jitter")+
+  scale_color_manual(values=c("#FFC300", "#FF5733", "#581845"))+  
+  stat_summary(fun.y = median, fun.ymin = median, fun.ymax = median,
+                 geom = "crossbar", width = 0.8, color="red")+
+  ggtitle("AREs in all TPM 2G",subtitle = "Padj= 1")+
+  theme_classic()
+
+t.test(TPM_2G_dist_AREs$mean_of_means_TPM_2G[TPM_2G_dist_AREs$Cluster=="0"],TPM_2G_dist_AREs$mean_of_means_TPM_2G[TPM_2G_dist_AREs$Cluster=="1"])
+p.adjust(p=0.0003542,n=6184, method = "BH")# Padj= 1
+t.test(TPM_2G_dist_AREs$mean_of_means_TPM_2G[TPM_2G_dist_AREs$Cluster=="0"],TPM_2G_dist_AREs$mean_of_means_TPM_2G[TPM_2G_dist_AREs$Cluster==">1"])
+p.adjust(p=0.2707,n=752, method = "BH") # 1
+
+#write.table(CN_TPM_2G_AREs,"CN_TPM_2G_AREs.csv", sep=";", dec=",", row.names = F)
+
+```
+
+
+```{r ARE in secreted}
+# secreted_list <- read.delim("/Users/stinky/Dropbox/regulatory_networks_CD8/Analysis/Secreted_protein_filtered copy.csv", sep=";", header = T)
+CN_TPM_2G_secreted <- merge(CN_TPM_2G,secreted_list, by.x="ID",by.y="ID", all.x=F)
+
+
+CN_TPM_2G_secreted_AREs <- merge(AREs,CN_TPM_2G_secreted, by.x="GeneName", by.y="ID", all.y=T)
+dim(CN_TPM_2G_secreted)
+
+CN_TPM_2G_secreted_AREs$Cluster_col[is.na(CN_TPM_2G_secreted_AREs$Cluster)]="0ARE"
+CN_TPM_2G_secreted_AREs$Cluster_col[CN_TPM_2G_secreted_AREs$Cluster==1]="1ARE"
+CN_TPM_2G_secreted_AREs$Cluster_col[CN_TPM_2G_secreted_AREs$Cluster>1]=">1ARE"
+CN_TPM_2G_secreted_AREs <- data.frame(CN_TPM_2G_secreted_AREs)
+
+ggplot(CN_TPM_2G_secreted_AREs, aes(x=mean_of_means_TPM_2G,y=avg_log_CN, color=Cluster_col ))+
+  geom_point(data=CN_TPM_2G, color="grey", stroke=0,size=2)+
+  geom_point()+
+  scale_color_manual(values=c("#FFC300", "#FF5733", "#581845"))+
+  ggrepel::geom_text_repel(data=CN_TPM_2G_secreted_AREs, aes(label=GeneName))+
+  geom_smooth(data = CN_TPM_2G_secreted_AREs[CN_TPM_2G_secreted_AREs$Cluster_col=="0ARE",], method = "lm",color ="#FFC300")+
+  geom_smooth(data = CN_TPM_2G_secreted_AREs[CN_TPM_2G_secreted_AREs$Cluster_col=="1ARE",], method = "lm",color ="#FF5733")+
+  geom_smooth(data = CN_TPM_2G_secreted_AREs[CN_TPM_2G_secreted_AREs$Cluster_col==">1ARE",], method = "lm",color ="#581845")+
+  theme_classic()
+
+# Slope secreted 0 ARE
+summary(lm(CN_TPM_2G_secreted_AREs[CN_TPM_2G_secreted_AREs$Cluster_col=="0ARE",]$avg_log_CN~
+     CN_TPM_2G_secreted_AREs[CN_TPM_2G_secreted_AREs$Cluster_col=="0ARE",]$mean_of_means_TPM_2G))
+# Slope 0.5567
+# p-value: 0.1736 !NS
+
+# Slope secreted 1 ARE
+summary(lm(CN_TPM_2G_secreted_AREs[CN_TPM_2G_secreted_AREs$Cluster_col=="1ARE",]$avg_log_CN~
+     CN_TPM_2G_secreted_AREs[CN_TPM_2G_secreted_AREs$Cluster_col=="1ARE",]$mean_of_means_TPM_2G))
+# Slope 1.3844
+# p-value: 0.02298
+
+# Slope secreted >1 ARE
+summary(lm(CN_TPM_2G_secreted_AREs[CN_TPM_2G_secreted_AREs$Cluster_col==">1ARE",]$avg_log_CN~
+     CN_TPM_2G_secreted_AREs[CN_TPM_2G_secreted_AREs$Cluster_col==">1ARE",]$mean_of_means_TPM_2G))
+# Slope 0.3494
+# p-value: 0.1426 !NS
+
+
+
+
+
+ggplot(TPM_2G_dist_AREs[TPM_2G_dist_AREs$ID %in% secreted_list$Gene,],aes(x=Cluster,y=mean_of_means_TPM_2G, color=Cluster))+
+  geom_point(stroke=0,size=2,position = "jitter")+
+  scale_color_manual(values=c("#FFC300", "#FF5733", "#581845"))+  
+  stat_summary(fun.y = median, fun.ymin = median, fun.ymax = median,
+               geom = "crossbar", width = 0.8, color="red")+
+  scale_y_continuous(expand = c(0,0), limits = c(-1.5,5)) +
+  theme_classic()
+
+ggplot(CN_TPM_2G_secreted_AREs[CN_TPM_2G_secreted_AREs$GeneName %in% secreted_list$Gene,],aes(x=Cluster_col,y=avg_log_CN, color=Cluster_col))+
+  geom_point(stroke=0,size=2,position = "jitter")+
+  scale_color_manual(values=c("#FFC300", "#FF5733", "#581845"))+  
+  stat_summary(fun.y = median, fun.ymin = median, fun.ymax = median,
+               geom = "crossbar", width = 0.8, color="red")+
+  ggtitle("AREs content CN",subtitle = "Padj= 1")+
+  scale_y_continuous(expand = c(0,0), limits = c(1.5,8)) +
+  theme_classic()
+
+CN_TPM_2G_secreted_AREs[CN_TPM_2G_secreted_AREs$GeneName %in% secreted_list$Gene,]
+t.test(CN_TPM_2G_secreted_AREs$mean_of_means_TPM_2G[(CN_TPM_2G_secreted_AREs$GeneName %in% secreted_list$Gene) & CN_TPM_2G_secreted_AREs$Cluster_col=="0ARE"],CN_TPM_2G_secreted_AREs$mean_of_means_TPM_2G[(CN_TPM_2G_secreted_AREs$GeneName %in% secreted_list$Gene) & CN_TPM_2G_secreted_AREs$Cluster_col=="1ARE"])
+p.adjust(p=0.1232,n=14, method = "BH")# Padj= 1
+
+```
+
+
+## AREs in CD molecules
+```{r CD and AREs}
+# first total TPM
+# CD_list <- read.delim("/Users/stinky/Dropbox/regulatory_networks_CD8/Analysis/CD_converted_list.csv", sep=";")
+TPM_2G_AREs <- merge(TPM_2G_dist,AREs, by.x="ID", by.y="GeneName", all.x=T)
+
+TPM_2G_AREs$Cluster_col[is.na(TPM_2G_AREs$Cluster)]="0"
+TPM_2G_AREs$Cluster_col[TPM_2G_AREs$Cluster==1]="1"
+TPM_2G_AREs$Cluster_col[TPM_2G_AREs$Cluster>1]=">1"
+
+
+ggplot(TPM_2G_AREs[TPM_2G_AREs$ID %in% CD_list$ID. ,], aes(y=(mean_of_means_TPM_2G), x=Cluster_col, color=Cluster_col))+
+  geom_point(stroke=0,size=2,position = "jitter")+
+  scale_color_manual(values=c("#FFC300", "#FF5733", "#581845"))+  
+  stat_summary(fun.y = median, fun.ymin = median, fun.ymax = median,
+               geom = "crossbar", width = 0.8, color="red")+
+  scale_y_continuous(expand = c(0,0), limits = c(-2,5)) +
+  theme_classic()
+
+
+CN_2G_AREs <- merge(CN_TPM_2G,AREs, by.x="ID", by.y="GeneName", all.x=T)
+
+CN_2G_AREs$Cluster_col[is.na(CN_2G_AREs$Cluster)]="0"
+CN_2G_AREs$Cluster_col[CN_2G_AREs$Cluster==1]="1"
+CN_2G_AREs$Cluster_col[CN_2G_AREs$Cluster>1]=">1"
+
+ggplot(CN_2G_AREs[CN_2G_AREs$ID %in% CD_list$ID,], aes(y=log10(avg_CN), x=Cluster_col, color=Cluster_col))+
+  geom_point(stroke=0,size=2,position = "jitter")+
+  scale_color_manual(values=c("#FFC300", "#FF5733", "#581845"))+  
+  stat_summary(fun.y = median, fun.ymin = median, fun.ymax = median,
+               geom = "crossbar", width = 0.8, color="red")+
+  scale_y_continuous(expand = c(0,0), limits = c(2,8)) +
+  theme_classic()
+
+ggplot(CN_2G_AREs[CN_2G_AREs$ID %in% CD_list$ID,], aes(x=mean_of_means_TPM_2G,y=avg_log_CN, color=Cluster_col ))+
+  geom_point(data=CN_2G_AREs, color="grey", stroke=0,size=2)+
+  geom_point()+
+  scale_color_manual(values=c("#FFC300", "#FF5733", "#581845"))+
+  geom_smooth(data= CN_2G_AREs[CN_2G_AREs$ID %in% CD_list$ID & CN_2G_AREs$Cluster_col=="0",],method = "lm")+
+  geom_smooth(data= CN_2G_AREs[CN_2G_AREs$ID %in% CD_list$ID & CN_2G_AREs$Cluster_col=="1",],method = "lm")+
+  theme_classic()
+
+
+# Slope secreted 0 ARE
+summary(lm(CN_2G_AREs[CN_2G_AREs$ID %in% CD_list$ID & CN_2G_AREs$Cluster_col=="0",]$avg_log_CN~
+   CN_2G_AREs[CN_2G_AREs$ID %in% CD_list$ID & CN_2G_AREs$Cluster_col=="0",]$mean_of_means_TPM_2G))
+# Slope 0.3598
+#  p-value: 0.00169
+
+# Slope secreted 1 ARE
+summary(lm(CN_2G_AREs[CN_2G_AREs$ID %in% CD_list$ID & CN_2G_AREs$Cluster_col=="1",]$avg_log_CN~
+   CN_2G_AREs[CN_2G_AREs$ID %in% CD_list$ID & CN_2G_AREs$Cluster_col=="1",]$mean_of_means_TPM_2G))
+# Slope 0.5335
+# p-value: 0.007932
+
+# Slope secreted >1 ARE
+summary(lm(CN_2G_AREs[CN_2G_AREs$ID %in% CD_list$ID & CN_2G_AREs$Cluster_col==">1",]$avg_log_CN~
+   CN_2G_AREs[CN_2G_AREs$ID %in% CD_list$ID & CN_2G_AREs$Cluster_col==">1",]$mean_of_means_TPM_2G))
+# Slope -1.542
+# p-value: NA
+
+
+
+
+```
+
+
+## AREs in TFs
+```{r TF and AREs}
+# first total TPM
+TF_list <- read.delim("/home/ben/Analysis/RF_human/Gene_class_lists/protein_class_Transcription.tsv")
+TPM_2G_AREs <- merge(TPM_2G_dist,AREs, by.x="ID", by.y="GeneName", all.x=T)
+
+TPM_2G_AREs$Cluster_col[is.na(TPM_2G_AREs$Cluster)]="0"
+TPM_2G_AREs$Cluster_col[TPM_2G_AREs$Cluster==1]="1"
+TPM_2G_AREs$Cluster_col[TPM_2G_AREs$Cluster>1]=">1"
+
+
+ggplot(TPM_2G_AREs[TPM_2G_AREs$ID %in% TF_list$Gene ,], aes(y=(mean_of_means_TPM_2G), x=Cluster_col, color=Cluster_col))+
+  geom_point(stroke=0,size=2,position = "jitter")+
+  scale_color_manual(values=c("#FFC300", "#FF5733", "#581845"))+  
+  stat_summary(fun.y = median, fun.ymin = median, fun.ymax = median,
+               geom = "crossbar", width = 0.8, color="red")+
+  scale_y_continuous(expand = c(0,0), limits = c(-2,5)) +
+  theme_classic()
+
+
+CN_2G_AREs <- merge(CN_TPM_2G,AREs, by.x="ID", by.y="GeneName", all.x=T)
+
+CN_2G_AREs$Cluster_col[is.na(CN_2G_AREs$Cluster)]="0"
+CN_2G_AREs$Cluster_col[CN_2G_AREs$Cluster==1]="1"
+CN_2G_AREs$Cluster_col[CN_2G_AREs$Cluster>1]=">1"
+
+ggplot(CN_2G_AREs[CN_2G_AREs$ID %in% TF_list$Gene,], aes(y=log10(avg_CN), x=Cluster_col, color=Cluster_col))+
+  geom_point(stroke=0,size=2,position = "jitter")+
+  scale_color_manual(values=c("#FFC300", "#FF5733", "#581845"))+  
+  stat_summary(fun.y = median, fun.ymin = median, fun.ymax = median,
+               geom = "crossbar", width = 0.8, color="red")+
+  scale_y_continuous(expand = c(0,0), limits = c(2,8)) +
+  theme_classic()
+
+ggplot(CN_2G_AREs[CN_2G_AREs$ID %in% TF_list$Gene,], aes(x=mean_of_means_TPM_2G,y=avg_log_CN, color=Cluster_col ))+
+  geom_point(data=CN_2G_AREs, color="grey", stroke=0,size=2)+
+  geom_point()+
+  scale_color_manual(values=c("#FFC300", "#FF5733", "#581845"))+
+  geom_smooth(data= CN_2G_AREs[CN_2G_AREs$ID %in% TF_list$Gene & CN_2G_AREs$Cluster_col=="0",],method = "lm")+
+  geom_smooth(data= CN_2G_AREs[CN_2G_AREs$ID %in% TF_list$Gene & CN_2G_AREs$Cluster_col=="1",],method = "lm")+
+  geom_smooth(data= CN_2G_AREs[CN_2G_AREs$ID %in% TF_list$Gene & CN_2G_AREs$Cluster_col==">1",],method = "lm")+
+  theme_classic()
+
+
+# Slope secreted 0 ARE
+summary(lm(CN_2G_AREs[CN_2G_AREs$ID %in% TF_list$Gene & CN_2G_AREs$Cluster_col=="0",]$avg_log_CN~
+   CN_2G_AREs[CN_2G_AREs$ID %in% TF_list$Gene & CN_2G_AREs$Cluster_col=="0",]$mean_of_means_TPM_2G))
+# Slope 0.4334
+# p-value: 0.0003171
+
+# Slope secreted 1 ARE
+summary(lm(CN_2G_AREs[CN_2G_AREs$ID %in% TF_list$Gene & CN_2G_AREs$Cluster_col=="1",]$avg_log_CN~
+   CN_2G_AREs[CN_2G_AREs$ID %in% TF_list$Gene & CN_2G_AREs$Cluster_col=="1",]$mean_of_means_TPM_2G))
+# Slope 0.2518
+# p-value: 0.04083
+
+# Slope secreted >1 ARE
+summary(lm(CN_2G_AREs[CN_2G_AREs$ID %in% TF_list$Gene & CN_2G_AREs$Cluster_col==">1",]$avg_log_CN~
+   CN_2G_AREs[CN_2G_AREs$ID %in% TF_list$Gene & CN_2G_AREs$Cluster_col==">1",]$mean_of_means_TPM_2G))
+# Slope 0.1337
+# p-value: 0.9813 !NS
+
+
+
+## Testing for differences between groups
+
+# protein
+t.test(CN_2G_AREs[CN_2G_AREs$ID %in% TF_list$Gene & CN_2G_AREs$Cluster_col=="0",]$avg_log_CN,
+       CN_2G_AREs[CN_2G_AREs$ID %in% TF_list$Gene & CN_2G_AREs$Cluster_col=="1",]$avg_log_CN) # 0.004469
+p.adjust(0.004469,n = 127,method = "BH") # 0.567563
+
+t.test(CN_2G_AREs[CN_2G_AREs$ID %in% TF_list$Gene & CN_2G_AREs$Cluster_col=="0",]$avg_log_CN,
+       CN_2G_AREs[CN_2G_AREs$ID %in% TF_list$Gene & CN_2G_AREs$Cluster_col==">1",]$avg_log_CN) # 0.2428
+p.adjust(0.2428,n = 8,method = "BH") # 1
+
+t.test(CN_2G_AREs[CN_2G_AREs$ID %in% TF_list$Gene & CN_2G_AREs$Cluster_col=="1",]$avg_log_CN,
+       CN_2G_AREs[CN_2G_AREs$ID %in% TF_list$Gene & CN_2G_AREs$Cluster_col==">1",]$avg_log_CN) # 0.8341
+p.adjust(0.8341,n = 8,method = "BH") # 1
+
+
+# mRNA
+
+
+t.test(TPM_2G_AREs[TPM_2G_AREs$ID %in% TF_list$Gene & TPM_2G_AREs$Cluster_col=="0",]$mean_of_means_TPM_2G,
+       TPM_2G_AREs[TPM_2G_AREs$ID %in% TF_list$Gene & TPM_2G_AREs$Cluster_col=="1",]$mean_of_means_TPM_2G) # 0.4574
+p.adjust(0.4574,n = 661,method = "BH") # 1
+
+t.test(TPM_2G_AREs[TPM_2G_AREs$ID %in% TF_list$Gene & TPM_2G_AREs$Cluster_col=="0",]$mean_of_means_TPM_2G,
+       TPM_2G_AREs[TPM_2G_AREs$ID %in% TF_list$Gene & TPM_2G_AREs$Cluster_col==">1",]$mean_of_means_TPM_2G) # 0.2508
+p.adjust(0.2508,n = 84 ,method = "BH") # 1
+
+t.test(TPM_2G_AREs[TPM_2G_AREs$ID %in% TF_list$Gene & TPM_2G_AREs$Cluster_col=="1",]$mean_of_means_TPM_2G,
+       TPM_2G_AREs[TPM_2G_AREs$ID %in% TF_list$Gene & TPM_2G_AREs$Cluster_col==">1",]$mean_of_means_TPM_2G) # 0.483
+p.adjust(0.483,n = 106,method = "BH") # 1
+
+
+
+
+
+```
+
+
+
+## Fake plot for schematic representation in paper
+```{r Fake plot for schematic representation in paper}
+library(MASS)
+
+# set random seed
+set.seed(1)
+
+example2 <- data.frame(mvrnorm(1000,
+                    mu = c(500, 500), 
+                    Sigma = matrix(c(500000, 500000, 500000, 1000000), ncol = 2),
+                    empirical = T))
+
+ggplot(example2, aes(x=example2$X1, y=example2$X2))+
+  geom_point(color="steelblue")+
+  geom_smooth(method = "lm", color= "black")+
+  theme_minimal()
+cor(example2$X1, example2$X2)
+
+```
+
+
+
+## Relation between 3UTR length and ARE content
+```{r relation between 3UTR length and ARE content}
+UTRs
+AREs <- read.delim("/Users/stinky/Dropbox/regulatory_networks_CD8/Analysis/Complete_3UTR_Data_ARED_PLUS.csv", sep=";")
+
+ARE_vs_UTRs <- merge(UTRs,AREs,by.x="Gene.name", by.y="X...GeneName", all.x=T)
+ARE_vs_UTRs$length3UTR <- mapply("-",ARE_vs_UTRs$X3..UTR.end,ARE_vs_UTRs$X3..UTR.start)
+ARE_vs_UTRs$length5UTR <- mapply("-",ARE_vs_UTRs$X5..UTR.end,ARE_vs_UTRs$X5..UTR.start)
+ARE_vs_UTRs$length3UTR
+ARE_vs_UTRs$Cluster[is.na(ARE_vs_UTRs$Cluster)]=0
+
+ARE_vs_UTRs$Cluster_norm <- ARE_vs_UTRs$Cluster
+ARE_vs_UTRs$Cluster_norm[ARE_vs_UTRs$Cluster_norm>1]=">1"
+
+
+
+plot(ARE_vs_UTRs$length3UTR,ARE_vs_UTRs$Cluster)
+
+ggplot(ARE_vs_UTRs,aes(x=Cluster_norm,y=log10(length3UTR), color=Cluster_norm))+
+  geom_point(stroke=0,size=2,position = "jitter")+
+  scale_color_manual(values=c("#FFC300", "#FF5733", "#581845"))+  
+  stat_summary(fun.y = median, fun.ymin = median, fun.ymax = median,
+               geom = "crossbar", width = 0.8, color="red")+
+  ggtitle("ARE content and 3UTR length",subtitle = "Padj0-1= 9.0e-13 |Padj1->1+0.001677")+
+  theme_classic()
+
+t.test((ARE_vs_UTRs[ARE_vs_UTRs$Cluster_norm=="1",]$length3UTR),
+       (ARE_vs_UTRs[ARE_vs_UTRs$Cluster_norm=="0",]$length3UTR)) # 2.2e-16
+p.adjust(2.2e-16,n = 4094,method = "BH") # 9.0068e-13
+
+t.test((ARE_vs_UTRs[ARE_vs_UTRs$Cluster_norm=="1",]$length3UTR),
+       (ARE_vs_UTRs[ARE_vs_UTRs$Cluster_norm==">1",]$length3UTR)) # 1.95e-06
+p.adjust(1.95e-06,n = 860,method = "BH") # 0.001677
+
+```
+
