@@ -1,0 +1,340 @@
+---
+title: "Gene_characteristics_per_Gene_classes"
+author: "Benoit Nicolet"
+date: "07/15/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+#source("https://bioconductor.org/biocLite.R")
+#biocLite()
+library(plyr)
+library(dplyr)
+library(ggplot2)
+library(corrplot)
+library(circlize)
+library(biomaRt)
+library(tidyverse)
+
+
+knitr::opts_knit$set("~/Analysis/mRNA-Prot_integration/")
+
+```
+
+
+```{r BiomaRt objects}
+#listEnsemblArchives()
+
+ensembl = useMart(biomart="ensembl", dataset="hsapiens_gene_ensembl", host = "https://apr2018.archive.ensembl.org")
+attributes_ens <- listAttributes(ensembl) # Here getting the list of attributes. There are >3000 of them, so you can filter : ) 
+tx2gene <- getBM(attributes=c( "ensembl_transcript_id_version","ensembl_gene_id"), mart = ensembl)
+colnames(tx2gene) <- c("Tx_ID","Gene_ID")
+
+ensemblnew = useMart(biomart="ensembl", dataset="hsapiens_gene_ensembl", host = "https://jan2020.archive.ensembl.org")
+annotation_genes <- getBM(attributes=c("ensembl_gene_id","external_gene_name"), mart = ensemblnew)
+
+annotation_GC <- getBM(attributes=c("ensembl_gene_id","percentage_gene_gc_content","external_gene_name"), mart = ensemblnew)
+
+annotation_conservation <- getBM(attributes=c("ensembl_gene_id","drerio_homolog_perc_id","external_gene_name"), mart = ensemblnew)
+
+```
+
+
+
+```{r 3UTR length human}
+## Here we re-format the fasta format from ENSEMBL BiomaRt to table format ##
+# UTR3_human <- readtext::readtext("/home/ben/Analysis/review/sequences/human_3UTR_mRNA.txt")
+# glimpse(UTR3_human)
+# UTR3_human <- gsub("\\\n","",UTR3_human) # removing the newlines
+# UTR3_human <- gsub(">","\\\n>",UTR3_human) ## replace > by \n>
+# #UTR3_human <- gsub("","\t",UTR3_human) ## making columns
+# write(UTR3_human,"/home/ben/Analysis/review/sequences/clean/human_3UTR_mRNA_nobreaks.txt")
+
+UTR3_human <- read.delim("/home/ben/Analysis/review/sequences/clean/human_3UTR_mRNA_nobreaks.txt",header = F, sep = "\t")
+UTR3_human$ID <- UTR3_human$V1
+UTR3_human$ID <- gsub("A","",UTR3_human$ID)
+UTR3_human$ID <- gsub("T","",UTR3_human$ID)
+UTR3_human$ID <- gsub("G","",UTR3_human$ID)
+UTR3_human$ID <- gsub("C","",UTR3_human$ID)
+UTR3_human$ID <- gsub(">","",UTR3_human$ID)
+
+UTR3_human$ID <- gsub("ENS","ENSG",UTR3_human$ID)
+
+UTR3_human$V1 <- gsub(">ENSG...........","",UTR3_human$V1)
+UTR3_human <- UTR3_human[2:1]
+colnames(UTR3_human)[2] <- "sequence"
+
+UTR3_human <- subset(UTR3_human,UTR3_human$sequence!="Sequence unavailable")
+
+UTR3_human$UTR3_length <- mapply(strsplit(as.character(UTR3_human$sequence),","),FUN=function(x){nchar(x)})
+
+```
+
+
+
+```{r 5UTR length human}
+## Here we re-format the fasta format from ENSEMBL BiomaRt to table format ##
+# UTR5_human <- readtext::readtext("/home/ben/Analysis/review/sequences/human_5UTR_mRNA.txt")
+# glimpse(UTR5_human)
+# UTR5_human <- gsub("\\\n","",UTR5_human) # removing the newlines
+# UTR5_human <- gsub(">","\\\n>",UTR5_human) ## replace > by \n>
+# #UTR5_human <- gsub("","\t",UTR5_human) ## making columns
+# write(UTR5_human,"/home/ben/Analysis/review/sequences/clean/human_5UTR_mRNA_nobreaks.txt")
+
+UTR5_human <- read.delim("/home/ben/Analysis/review/sequences/clean/human_5UTR_mRNA_nobreaks.txt",header = F, sep = "\t")
+UTR5_human$ID <- UTR5_human$V1
+UTR5_human$ID <- gsub("A","",UTR5_human$ID)
+UTR5_human$ID <- gsub("T","",UTR5_human$ID)
+UTR5_human$ID <- gsub("G","",UTR5_human$ID)
+UTR5_human$ID <- gsub("C","",UTR5_human$ID)
+UTR5_human$ID <- gsub(">","",UTR5_human$ID)
+
+UTR5_human$ID <- gsub("ENS","ENSG",UTR5_human$ID)
+
+UTR5_human$V1 <- gsub(">ENSG...........","",UTR5_human$V1)
+UTR5_human <- UTR5_human[2:1]
+colnames(UTR5_human)[2] <- "sequence"
+
+UTR5_human <- subset(UTR5_human,UTR5_human$sequence!="Sequence unavailable")
+
+UTR5_human$UTR5_length <- mapply(strsplit(as.character(UTR5_human$sequence),","),FUN=function(x){nchar(x)})
+
+
+```
+
+
+
+
+```{r Gene classes}
+
+## ribosomal pt
+ribo_list <- read.delim("/home/ben/Analysis/RF_human/Gene_class_lists/protein_class_Ribosomal.tsv")
+mamm_ribo_list <- ribo_list[-grep("Mito",ribo_list$Gene.description),]
+mamm_ribo_list <- data.frame("ID"=mamm_ribo_list$Gene)
+
+## RBPs
+castello <- read.delim("/home/ben/Analysis/RF_human/Gene_class_lists/RBP_Castello_et_al_2016.csv", sep=";",header=T) 
+castello <- data.frame("ID"=castello$Symbol)
+eRIC <- read.delim("/home/ben/Analysis/RF_human/Gene_class_lists/Perez-Perri2018_RBP_eRIC.csv", sep=";",header=T) 
+eRIC <- data.frame("ID"=eRIC$gene_name)
+tuschl <- read.delim("/home/ben/Analysis/RF_human/Gene_class_lists/Tuschl_2014.csv", sep=";",header=T) 
+colnames(tuschl) <- "ID"
+
+RBP_list <- rbind(castello,eRIC,tuschl)
+RBP_list <- distinct(RBP_list, RBP_list$ID)
+colnames(RBP_list) <- "ID"
+
+RBP_list$ribo <- RBP_list$ID %in% ribo_list$Gene
+RBP_list <- subset(RBP_list,RBP_list$ribo==FALSE)
+RBP_list$ribo <- NULL
+dim(RBP_list) #1855 
+
+## CD ##
+CD_list <- read.delim("/home/ben/Analysis/RF_human/Gene_class_lists/CD_converted_list.csv", sep=";")
+colnames(CD_list) <- "ID"
+
+
+## Secreted
+secreted_list <- read.delim("/home/ben/Analysis/RF_human/Gene_class_lists/protein_class_Predicted_secreted.tsv", sep="", header = T)
+secreted_list <- subset(secreted_list,secreted_list$Evidence>0)
+secreted_list <- data.frame("ID"=secreted_list$Gene)
+dim(secreted_list)
+
+## TFs
+TF_list <- read.delim("/home/ben/Analysis/RF_human/Gene_class_lists/protein_class_Transcription.tsv")
+TF_list <- subset(TF_list,TF_list$Evidence>0)
+TF_list <- data.frame("ID"=TF_list$Gene)
+
+# Mito ribo pt (too small)
+ribo_list <- read.delim("/home/ben/Analysis/RF_human/Gene_class_lists/protein_class_Ribosomal.tsv")
+mito_ribo_list <- ribo_list[grep("Mito",ribo_list$Gene.description),]
+mito_ribo_list <- data.frame("ID"=mito_ribo_list$Gene)
+dim(mito_ribo_list)
+AU_rich <- read.delim("/home/ben/Analysis/RF_human/Gene_class_lists/Complete_3UTR_Data_ARED_PLUS.csv", sep=";")
+AU_rich$length <- mapply(strsplit(as.character(AU_rich$Pattern),","),FUN=function(x){nchar(x)})
+
+
+## TCA
+TCA_list <- read.delim("/home/ben/Analysis/RF_human/Gene_class_lists/protein_class_Citric.tsv")
+TCA_list <- subset(TCA_list,TCA_list$Evidence>0)
+TCA_list <- data.frame("ID"=TCA_list$Gene)
+dim(TCA_list)
+
+```
+
+
+
+
+
+```{r Gene class and 5UTR}
+UTR5_human <- merge(UTR5_human,annotation_genes, by.x="ID",by.y="ensembl_gene_id", all.x=T)
+UTR5_human$sequence <- NULL
+
+
+UTR5_human <- ddply(UTR5_human,"external_gene_name", numcolwise(mean))
+
+
+UTR5_human$GO <- "Else"
+UTR5_human$GO[UTR5_human$external_gene_name %in% TF_list$ID] <- "TF"
+UTR5_human$GO[UTR5_human$external_gene_name %in% TCA_list$ID] <- "TCA"
+UTR5_human$GO[UTR5_human$external_gene_name %in% secreted_list$ID] <- "secreted"
+UTR5_human$GO[UTR5_human$external_gene_name %in% mamm_ribo_list$ID] <- "mamm_ribo"
+UTR5_human$GO[UTR5_human$external_gene_name %in% mito_ribo_list$ID] <- "mito_ribo"
+UTR5_human$GO[UTR5_human$external_gene_name %in% RBP_list$ID] <- "RBP"
+UTR5_human$GO[UTR5_human$external_gene_name %in% CD_list$ID] <- "CD"
+table(UTR5_human$GO) # 1492
+
+
+UTR5_human_GO <- subset(UTR5_human,UTR5_human$GO!="Else")
+
+
+ggplot(UTR5_human_GO, aes(x=GO, y=log10(UTR5_length)))+
+  geom_point(position = "jitter", alpha=0.2, stroke=0,size=1.5)+
+    stat_summary(fun = median, fun.min = median, fun.max = median,
+               geom = "crossbar", width = 0.8, color="red")+
+  scale_x_discrete(limits = c("secreted","CD","TF","RBP","mamm_ribo","mito_ribo","TCA"))+
+  theme_minimal()+
+  theme(aspect.ratio = 2,axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+
+
+median(UTR5_human_GO[UTR5_human_GO$GO=="TF",]$UTR5_length) # 233
+median(UTR5_human_GO[UTR5_human_GO$GO=="TCA",]$UTR5_length) # 105.25
+median(UTR5_human_GO[UTR5_human_GO$GO=="secreted",]$UTR5_length) # 141.5
+median(UTR5_human_GO[UTR5_human_GO$GO=="mamm_ribo",]$UTR5_length) # 115.8
+median(UTR5_human_GO[UTR5_human_GO$GO=="mito_ribo",]$UTR5_length) # 79.53333
+median(UTR5_human_GO[UTR5_human_GO$GO=="RBP",]$UTR5_length) # 163.1
+median(UTR5_human_GO[UTR5_human_GO$GO=="CD",]$UTR5_length,na.rm = T) # 153.3333
+
+
+```
+
+
+
+
+```{r Gene class and 3UTR}
+UTR3_human <- merge(UTR3_human,annotation_genes, by.x="ID",by.y="ensembl_gene_id", all.x=T)
+UTR3_human$sequence <- NULL
+UTR3_human$organism <- NULL
+
+UTR3_human <- ddply(UTR3_human,"external_gene_name", numcolwise(mean))
+
+UTR3_human$GO <- "Else"
+UTR3_human$GO[UTR3_human$external_gene_name %in% TF_list$ID] <- "TF"
+UTR3_human$GO[UTR3_human$external_gene_name %in% TCA_list$ID] <- "TCA"
+UTR3_human$GO[UTR3_human$external_gene_name %in% secreted_list$ID] <- "secreted"
+UTR3_human$GO[UTR3_human$external_gene_name %in% mamm_ribo_list$ID] <- "mamm_ribo"
+UTR3_human$GO[UTR3_human$external_gene_name %in% mito_ribo_list$ID] <- "mito_ribo"
+UTR3_human$GO[UTR3_human$external_gene_name %in% RBP_list$ID] <- "RBP"
+UTR3_human$GO[UTR3_human$external_gene_name %in% CD_list$ID] <- "CD"
+table(UTR3_human$GO) # 1492
+
+
+UTR3_human_GO <- subset(UTR3_human,UTR3_human$GO!="Else")
+
+
+
+
+ggplot(UTR3_human_GO, aes(x=GO, y=log10(UTR3_length)))+
+  geom_point(position = "jitter", alpha=0.2, stroke=0,size=1.5)+
+    stat_summary(fun = median, fun.min = median, fun.max = median,
+               geom = "crossbar", width = 0.8, color="red")+
+  scale_x_discrete(limits = c("secreted","CD","TF","RBP","mamm_ribo","mito_ribo","TCA"))+
+  theme_minimal()+
+  theme(aspect.ratio = 2,axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+
+
+median(UTR3_human_GO[UTR3_human_GO$GO=="TF",]$UTR3_length) # 1189.214
+median(UTR3_human_GO[UTR3_human_GO$GO=="TCA",]$UTR3_length) # 550.25
+median(UTR3_human_GO[UTR3_human_GO$GO=="secreted",]$UTR3_length) # 531.8222
+median(UTR3_human_GO[UTR3_human_GO$GO=="mamm_ribo",]$UTR3_length) # 287.3333
+median(UTR3_human_GO[UTR3_human_GO$GO=="mito_ribo",]$UTR3_length) # 396.1705
+median(UTR3_human_GO[UTR3_human_GO$GO=="RBP",]$UTR3_length) # 848.125
+median(UTR3_human_GO[UTR3_human_GO$GO=="CD",]$UTR3_length,na.rm = T) # 814.3333
+
+
+```
+
+
+
+```{r Gene class and GC %}
+GC_content_human <- annotation_GC
+
+GC_content_human$GO <- "Else"
+GC_content_human$GO[GC_content_human$external_gene_name %in% TF_list$ID] <- "TF"
+GC_content_human$GO[GC_content_human$external_gene_name %in% TCA_list$ID] <- "TCA"
+GC_content_human$GO[GC_content_human$external_gene_name %in% secreted_list$ID] <- "secreted"
+GC_content_human$GO[GC_content_human$external_gene_name %in% mamm_ribo_list$ID] <- "mamm_ribo"
+GC_content_human$GO[GC_content_human$external_gene_name %in% mito_ribo_list$ID] <- "mito_ribo"
+GC_content_human$GO[GC_content_human$external_gene_name %in% RBP_list$ID] <- "RBP"
+GC_content_human$GO[GC_content_human$external_gene_name %in% CD_list$ID] <- "CD"
+table(GC_content_human$GO) # 1492
+
+
+GC_content_human_GO <- subset(GC_content_human,GC_content_human$GO!="Else")
+
+
+ggplot(GC_content_human_GO, aes(x=GO, y=(percentage_gene_gc_content)))+
+  geom_point(position = "jitter", alpha=0.1, stroke=0,size=1.5)+
+    stat_summary(fun = median, fun.min = median, fun.max = median,
+               geom = "crossbar", width = 0.8, color="red")+
+  theme_minimal()+
+  scale_x_discrete(limits = c("secreted","CD","TF","RBP","mamm_ribo","mito_ribo","TCA"))+
+  scale_y_continuous(limits = c(20,80), expand = c(0,0))+
+  theme(aspect.ratio = 2,axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+
+
+median(GC_content_human_GO[GC_content_human_GO$GO=="TF",]$percentage_gene_gc_content) # 46.435
+median(GC_content_human_GO[GC_content_human_GO$GO=="TCA",]$percentage_gene_gc_content) # 46.02
+median(GC_content_human_GO[GC_content_human_GO$GO=="secreted",]$percentage_gene_gc_content) # 47.85
+median(GC_content_human_GO[GC_content_human_GO$GO=="mamm_ribo",]$percentage_gene_gc_content) # 47.405
+median(GC_content_human_GO[GC_content_human_GO$GO=="mito_ribo",]$percentage_gene_gc_content) # 46.36
+median(GC_content_human_GO[GC_content_human_GO$GO=="RBP",]$percentage_gene_gc_content) # 44.11
+median(GC_content_human_GO[GC_content_human_GO$GO=="CD",]$percentage_gene_gc_content,na.rm = T) # 48.32
+
+
+```
+
+
+
+```{r Gene class and conservation to zebrafish}
+conservation_human <- annotation_conservation
+
+conservation_human$GO <- "Else"
+conservation_human$GO[conservation_human$external_gene_name %in% TF_list$ID] <- "TF"
+conservation_human$GO[conservation_human$external_gene_name %in% TCA_list$ID] <- "TCA"
+conservation_human$GO[conservation_human$external_gene_name %in% secreted_list$ID] <- "secreted"
+conservation_human$GO[conservation_human$external_gene_name %in% mamm_ribo_list$ID] <- "mamm_ribo"
+conservation_human$GO[conservation_human$external_gene_name %in% mito_ribo_list$ID] <- "mito_ribo"
+conservation_human$GO[conservation_human$external_gene_name %in% RBP_list$ID] <- "RBP"
+conservation_human$GO[conservation_human$external_gene_name %in% CD_list$ID] <- "CD"
+table(conservation_human$GO) # 1492
+
+conservation_human_GO <- subset(conservation_human,conservation_human$GO!="Else")
+
+ggplot(conservation_human_GO, aes(x=GO, y=(drerio_homolog_perc_id)))+
+  geom_point(position = "jitter", alpha=0.2, stroke=0,size=1.5)+
+    stat_summary(fun = median, fun.min = median, fun.max = median,
+               geom = "crossbar", width = 0.8, color="red")+
+  theme_minimal()+
+  scale_x_discrete(limits = c("secreted","CD","TF","RBP","mamm_ribo","mito_ribo","TCA"))+
+  theme(aspect.ratio = 2,axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+
+
+median(conservation_human_GO[conservation_human_GO$GO=="TF",]$drerio_homolog_perc_id,na.rm = T) # 50.5703
+median(conservation_human_GO[conservation_human_GO$GO=="TCA",]$drerio_homolog_perc_id,na.rm = T) # 75.485
+median(conservation_human_GO[conservation_human_GO$GO=="secreted",]$drerio_homolog_perc_id,na.rm = T) # 39.3714
+median(conservation_human_GO[conservation_human_GO$GO=="mamm_ribo",]$drerio_homolog_perc_id,na.rm = T) # 90.4
+median(conservation_human_GO[conservation_human_GO$GO=="mito_ribo",]$drerio_homolog_perc_id,na.rm = T) # 53.012
+median(conservation_human_GO[conservation_human_GO$GO=="RBP",]$drerio_homolog_perc_id,na.rm = T) # 60.7921
+median(conservation_human_GO[conservation_human_GO$GO=="CD",]$drerio_homolog_perc_id,na.rm = T) # 23.0336
+
+
+```
+
+
+
+
+
+
