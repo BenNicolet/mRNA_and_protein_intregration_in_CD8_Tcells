@@ -1,0 +1,1102 @@
+---
+title: "TPM_MS_CX3CR1_Tmem_analysis"
+author: "Benoit Nicolet"
+date: "7/15/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(plyr)
+library(dplyr)
+library("pheatmap")
+library(ggplot2)
+library("tximport")
+library(corrplot)
+library(data.table)
+
+# source("https://bioconductor.org/biocLite.R")
+#biocLite()
+knitr::opts_knit$set("/home/ben/Analysis/mRNA-Prot_integration/CX3CR1/")
+
+```
+
+
+```{r importing new TPM}
+dirN <- file.path( "/home/ben/Analysis/mRNA-Prot_integration/CX3CR1/Concat_CX3CR1")
+#Here is my sample list and setup for 
+{
+samples <-NULL
+samples$Sample.name <- c("Naive1_1.fastq_quant","Naive2_1.fastq_quant","Naive3_1.fastq_quant",  
+"CD62L-CX3CR1-1_1.fastq_quant","CD62L-CX3CR1-2_1.fastq_quant","CD62L-CX3CR1-3_1.fastq_quant","CD62L-CX3CR1-4_1.fastq_quant",
+"CD62L+CX3CR1-1_1.fastq_quant","CD62L+CX3CR1-2_1.fastq_quant","CD62L+CX3CR1-3_1.fastq_quant",
+"CD62L-CX3CR1+1_1.fastq_quant","CD62L-CX3CR1+2_1.fastq_quant","CD62L-CX3CR1+3_1.fastq_quant","CD62L-CX3CR1+4_1.fastq_quant",
+"CD62L+CX3CR1+1_1.fastq_quant","CD62L+CX3CR1+2_1.fastq_quant","CD62L+CX3CR1+3_1.fastq_quant")
+samples <- as.data.frame(samples)
+}
+head(samples)
+filesN <- file.path(dirN, samples$Sample.name, "quant.sf")
+#Here giving the right names for the sample names from the sample file
+names(filesN) <- paste0(samples$Sample.name)
+filesN
+
+allDataN <- lapply(filesN, function(.file){
+  
+   dat<-read.delim(.file, header=T,sep = "\t")
+   dat<-dat[,c(-2,-3,-5)]
+   dat <- dat[,1:2]
+   dat    # return the dataframe
+}) 
+# From Salmon output
+# column 1: Name (Tx ID)
+# column 2: Length
+# column 3: EffectiveLength
+# column 4: TPM
+# column 5: NumReads
+		
+# combine into a single dataframe
+TPM_CX3CR1 <- do.call(cbind, allDataN)
+TPM_CX3CR1$ID <- TPM_CX3CR1$Naive1_1.fastq_quant.Name
+TPM_CX3CR1 <- TPM_CX3CR1[, -grep("Name", colnames(TPM_CX3CR1))]
+
+head(TPM_CX3CR1)
+colnames(TPM_CX3CR1) <- c("Naive1","Naive2","Naive3",  
+"CD62L-CX3CR1-1","CD62L-CX3CR1-2","CD62L-CX3CR1-3","CD62L-CX3CR1-4",
+"CD62L+CX3CR1-1","CD62L+CX3CR1-2","CD62L+CX3CR1-3",
+"CD62L-CX3CR1+1","CD62L-CX3CR1+2","CD62L-CX3CR1+3","CD62L-CX3CR1+4",
+"CD62L+CX3CR1+1","CD62L+CX3CR1+2","CD62L+CX3CR1+3","ID")
+head(TPM_CX3CR1)
+
+
+
+# TPM_CX3CR1 <- subset(TPM_CX3CR1, TPM_CX3CR1$Naive1>0 | TPM_CX3CR1$Naive2>0 | TPM_CX3CR1$Naive3>0 |
+#                   TPM_CX3CR1$`CD62L-CX3CR1-1`>0 | TPM_CX3CR1$`CD62L-CX3CR1-2`>0 | TPM_CX3CR1$`CD62L-CX3CR1-3`>0 | TPM_CX3CR1$`CD62L-CX3CR1-4`>0 |
+#                   TPM_CX3CR1$`CD62L+CX3CR1-1`>0 | TPM_CX3CR1$`CD62L+CX3CR1-2` >0 | TPM_CX3CR1$`CD62L+CX3CR1-3`>0 |
+#                   TPM_CX3CR1$`CD62L-CX3CR1+1`>0 | TPM_CX3CR1$`CD62L-CX3CR1+2` >0 | TPM_CX3CR1$`CD62L-CX3CR1+3`>0 | TPM_CX3CR1$`CD62L-CX3CR1+4`>0 |
+#                   TPM_CX3CR1$`CD62L+CX3CR1+1`>0 | TPM_CX3CR1$`CD62L+CX3CR1+2`>0 | TPM_CX3CR1$`CD62L+CX3CR1+3`>0)
+
+
+# import gene info (and names)
+tx2gene <-read.delim("/home/ben/Analysis/mRNA-Prot_integration/tx_ID_Gene_ID.txt",sep = ",")
+colnames(tx2gene) <- c("Tx_ID","Gene_ID")
+tx2gene <- distinct(tx2gene, Tx_ID , .keep_all = T)
+head(tx2gene)
+dim(tx2gene)
+
+
+annotation_2G <- read.delim("/home/ben/Analysis/mRNA-Prot_integration/Bio_mart_GeneID_name_description_type.txt", sep=",")
+dim(annotation_2G)
+annotation_2G <- distinct(annotation_2G, Gene.stable.ID , .keep_all = T)
+dim(annotation_2G)
+
+annotations <- merge(tx2gene,annotation_2G,by.x="Gene_ID",by.y = "Gene.stable.ID", all.x = T)
+dim(annotations)
+
+
+### merging gene info with TPM_CX3CR1s ###
+TPM_CX3CR1_annotated <- merge(TPM_CX3CR1, annotations, by.y="Tx_ID", by.x="ID", all.x=T)
+dim(TPM_CX3CR1_annotated)
+table(TPM_CX3CR1_annotated$Gene.type)
+TPM_CX3CR1_annotated <- subset(TPM_CX3CR1_annotated,TPM_CX3CR1_annotated$Gene.type=="protein_coding")
+#TPM_CX3CR1_annotated <- ddply(TPM_CX3CR1_annotated,"Gene.name", numcolwise(sum),.keep_all=T, .drop=FALSE)
+#dim(TPM_CX3CR1_annotated)
+TPM_CX3CR1_annotated <- ddply(TPM_CX3CR1_annotated,"Gene.name", numcolwise(sum))
+dim(TPM_CX3CR1_annotated)
+
+#write.table(TPM_CX3CR1_annotated,"TPM_CX3CR1_annotated.csv", sep=";", dec=",", row.names = F)
+```
+
+
+## Importing protein copy number estimates
+```{r MS import}
+CX3CR1_data <- read.delim("/home/ben/Analysis/mRNA-Prot_integration/CX3CR1/CX3CR1_MS_proteomic_ruler_from_LFQ.txt", header = T, sep="\t", dec=",")
+dim(CX3CR1_data)
+
+CX3CR1_data <- subset(CX3CR1_data,CX3CR1_data$N..Average.molecular.mass>1)
+
+Copy_num_CX3CR1 <- CX3CR1_data %>% dplyr::select(contains("Copy.number"))
+Copy_num_CX3CR1$Gene.name <- CX3CR1_data$T..Gene.name
+Copy_num_CX3CR1$Gene.names <- CX3CR1_data$T..Gene.names
+Copy_num_CX3CR1$Protein.ID <- CX3CR1_data$T..Protein.IDs
+
+colnames(Copy_num_CX3CR1) <- c("naive_1","naive_2","naive_3","naive_4","CD62-CX3CR1-_1","CD62-CX3CR1-_2","CD62-CX3CR1-_3","CD62-CX3CR1-_4","CD62-CX3CR1+_1","CD62-CX3CR1+_2","CD62-CX3CR1+_3","CD62-CX3CR1+_4","CD62+CX3CR1-_1","CD62+CX3CR1-_2","CD62+CX3CR1-_3","CD62+CX3CR1-_4","CD62+CX3CR1+_1","CD62+CX3CR1+_2","CD62+CX3CR1+_3","CD62+CX3CR1+_4","Gene.name","Gene.names","Protein.ID")
+
+Copy_num_CX3CR1$pt_ID <- mapply(strsplit(as.character(Copy_num_CX3CR1$Protein.ID),";"),FUN=function(x){(as.character(x)[1])})
+
+uniprot <- read.delim("/home/ben/Analysis/mRNA-Prot_integration//uniprot-Human.tab", header = T)
+#head(uniprot)
+
+uniprot$Gene.names <- mapply(strsplit(as.character(uniprot$Gene.names)," "),FUN=function(x){(as.character(x)[1])})
+
+Copy_num_CX3CR1$pt_ID <- mapply(strsplit(as.character(Copy_num_CX3CR1$pt_ID),"-"),FUN=function(x){(as.character(x)[1])})
+
+Copy_num_CX3CR1 <- merge(Copy_num_CX3CR1, uniprot, by.x="pt_ID", by.y="Entry", all.x=T)
+
+Copy_num_CX3CR1$Gene.names.x[Copy_num_CX3CR1$Gene.names.x==""]=NA
+
+Copy_num_CX3CR1$Gene.ID <- Copy_num_CX3CR1$Gene.names.y
+Copy_num_CX3CR1$Gene.ID <- 
+  ifelse(is.na(Copy_num_CX3CR1$Gene.ID)==TRUE,as.character(Copy_num_CX3CR1$Gene.names.x),as.character(Copy_num_CX3CR1$Gene.names.y))	
+
+#hist(log10(Copy_num_CX3CR1$naive_1))
+Copy_num_CX3CR1[22:23] <- NULL
+Copy_num_CX3CR1[23:28] <- NULL
+#Copy_num_CX3CR1$pt_ID <- NULL
+#Copy_num_CX3CR1$Protein.ID<- NULL
+dim(Copy_num_CX3CR1) ## 6069 protein found from 6342 genes
+Copy_num_CX3CR1 <- data.frame(Copy_num_CX3CR1)
+#Copy_num_CX3CR1 <- ddply(Copy_num_CX3CR1,"Gene.ID", numcolwise(mean),.drop = FALSE)
+
+Copy_num_CX3CR1$Gene.ID <- mapply(strsplit(as.character(Copy_num_CX3CR1$Gene.ID),";"),FUN=function(x){(as.character(x)[1])})
+
+# write.table(Copy_num_CX3CR1,"Copy_num_CX3CR1.csv", sep=";", dec=",", row.names = F)
+
+```
+
+## Averaging TPM per groups
+```{r Averaging TPM per groups}
+TPM_avg_CX3CR1 <- NULL
+TPM_avg_CX3CR1$ID <- TPM_CX3CR1_annotated$Gene.name
+#TPM_avg_CX3CR1$TPM_naive <- rowMeans(TPM_CX3CR1_annotated[2:4],na.rm = TRUE)
+TPM_avg_CX3CR1$TPM_mem<- rowMeans(TPM_CX3CR1_annotated[5:18],na.rm = TRUE)
+#TPM_avg_CX3CR1$TPM_62Lneg_CX3CR1neg <- rowMeans(TPM_CX3CR1_annotated[5:8],na.rm = TRUE)
+#TPM_avg_CX3CR1$TPM_62Lneg_CX3CR1pos <- rowMeans(TPM_CX3CR1_annotated[9:11],na.rm = TRUE)
+#TPM_avg_CX3CR1$TPM_62Lpos_CX3CR1neg <- rowMeans(TPM_CX3CR1_annotated[12:15],na.rm = TRUE)
+#TPM_avg_CX3CR1$TPM_62Lpos_CX3CR1pos <- rowMeans(TPM_CX3CR1_annotated[16:18],na.rm = TRUE)
+TPM_avg_CX3CR1 <- data.frame(TPM_avg_CX3CR1)
+#TPM_avg_CX3CR1$TPM_all <- rowMeans(TPM_avg_CX3CR1[2:6],na.rm = TRUE)
+#TPM_avg_CX3CR1 <- subset(TPM_avg_CX3CR1,TPM_avg_CX3CR1$TPM_all>-1)
+
+#sum(TPM_CX3CR1_annotated$Naive1)
+ggplot(TPM_avg_CX3CR1, aes(log10(TPM_mem)))+
+  geom_histogram(binwidth=.2,fill="#579EC9", color="black")+
+  #geom_histogram(data=TPM_new_dist[TPM_new_dist$group == "sig",],binwidth=.5,fill="grey")+
+  scale_x_continuous(expand = c(0,0), limits = c(-3,6), breaks = c(-3,-2,-1,0,1,2,3,4,5,6))+
+  scale_y_continuous(expand = c(0,0), limits = c(0,2000)) +
+  geom_vline(xintercept = log10(median(TPM_avg_CX3CR1$TPM_mem[TPM_avg_CX3CR1$TPM_mem>0.001], na.rm = T)),color="red")+
+  theme_classic()
+
+log10(max(TPM_avg_CX3CR1$TPM_mem))-log10(min(TPM_avg_CX3CR1$TPM_mem[TPM_avg_CX3CR1$TPM_mem>0.01])) # Spans 7.204869 power of 10!!
+
+dim(TPM_avg_CX3CR1[TPM_avg_CX3CR1$TPM_mem>0.1,]) #15038
+
+```
+
+
+## Averaging copy numbers per groups
+```{r Averaging copy numbers per groups}
+
+MS_avg_CX3CR1 <- NULL
+MS_avg_CX3CR1$ID <- Copy_num_CX3CR1$Gene.ID
+MS_avg_CX3CR1$pt_ID <- Copy_num_CX3CR1$pt_ID
+#MS_avg_CX3CR1$CN_naive <- rowMeans(Copy_num_CX3CR1[2:5],na.rm = TRUE)
+MS_avg_CX3CR1$CN_mem <- rowMeans(Copy_num_CX3CR1[6:21],na.rm = TRUE)
+# MS_avg_CX3CR1$CN_62Lneg_CX3CR1neg <- rowMeans(Copy_num_CX3CR1[6:9],na.rm = TRUE)
+# MS_avg_CX3CR1$CN_62Lneg_CX3CR1pos <- rowMeans(Copy_num_CX3CR1[10:13],na.rm = TRUE)
+# MS_avg_CX3CR1$CN_62Lpos_CX3CR1neg <- rowMeans(Copy_num_CX3CR1[14:17],na.rm = TRUE)
+# MS_avg_CX3CR1$CN_62Lpos_CX3CR1pos <- rowMeans(Copy_num_CX3CR1[18:21],na.rm = TRUE)
+MS_avg_CX3CR1 <- data.frame(MS_avg_CX3CR1)
+#MS_avg_CX3CR1$CN_avg_all <- rowMeans(MS_avg_CX3CR1[3:7],na.rm = TRUE)
+
+
+ggplot(MS_avg_CX3CR1, aes(log10(CN_mem)))+
+  geom_histogram(binwidth=.2,fill="#D96651", color="black")+
+  #geom_histogram(data=TPM_new_dist[TPM_new_dist$group == "sig",],binwidth=.5,fill="grey")+
+  scale_x_continuous(expand = c(0,0), limits = c(0,8.5), breaks = c(0,1,2,3,4,5,6,7,8))+
+  scale_y_continuous(expand = c(0,0), limits = c(0,500),breaks = c(0,250,500))+
+  geom_vline(xintercept = log10(median(MS_avg_CX3CR1$CN_mem)),color="red")+
+  theme_classic()
+
+log10(max(MS_avg_CX3CR1$CN_mem))-log10(min(MS_avg_CX3CR1$CN_mem)) # Spans 6.6 power of 10!!
+
+```
+
+
+## Merging TPM an CN
+```{r merging TPM and CN}
+
+TPM_MS_avg_CX3CR1 <- merge(TPM_avg_CX3CR1,MS_avg_CX3CR1,by="ID")
+#TPM_MS_avg_CX3CR1 <- subset(TPM_MS_avg_CX3CR1,TPM_MS_avg_CX3CR1$CN_naive<10^7.1)
+ggplot(TPM_MS_avg_CX3CR1[TPM_MS_avg_CX3CR1$TPM_mem>0.1,],aes(x=log10(TPM_mem),y=log10(CN_mem)))+
+  geom_point(alpha=0.2, size=2)+
+  geom_smooth(method = "lm",na.rm = T)+
+  scale_x_continuous(limits = c(-1,5),expand = c(0,0))+
+  scale_y_continuous(limits = c(1,8),expand = c(0,0))+
+  theme_minimal()
+
+ggplot(data=TPM_MS_avg_CX3CR1[TPM_MS_avg_CX3CR1$TPM_mem>=0.1,],aes(x=log10(TPM_mem),y=log10(CN_mem)))+
+  geom_point(alpha=1, stroke=0, size=2)+
+  geom_smooth(method = "lm",na.rm = T)+
+  scale_x_continuous(limits = c(-2,5),expand = c(0,0))+
+  scale_y_continuous(limits = c(1,8),expand = c(0,0))+
+  theme_minimal()
+
+
+TPM_MS_avg_CX3CR1$log_TPM_mem <- log10(TPM_MS_avg_CX3CR1$TPM_mem)
+TPM_MS_avg_CX3CR1$log_CN_all <- log10(TPM_MS_avg_CX3CR1$CN_mem)
+
+TPM_MS_avg_CX3CR1[5:6] <- lapply(TPM_MS_avg_CX3CR1[5:6], function(x) replace(as.character(x), grep("-Inf", x), NA))
+#LFC_N_eff[is.na(LFC_N_eff)]=""
+TPM_MS_avg_CX3CR1[5:6] <- lapply(TPM_MS_avg_CX3CR1[5:6], function(x) {
+    if(is.character(x)) as.numeric(x) else x
+  })
+sapply(TPM_MS_avg_CX3CR1, class)
+
+
+
+
+cor((TPM_MS_avg_CX3CR1$log_TPM_mem[TPM_MS_avg_CX3CR1$TPM_mem>=0.1]), (TPM_MS_avg_CX3CR1$log_CN_all[TPM_MS_avg_CX3CR1$TPM_mem>=0.1]),use = "pairwise.complete.obs", method = "spearman") 
+# 0.3736598
+
+cor((TPM_MS_avg_CX3CR1$log_TPM_mem[TPM_MS_avg_CX3CR1$TPM_mem>=0.1]), (TPM_MS_avg_CX3CR1$log_CN_all[TPM_MS_avg_CX3CR1$TPM_mem>=0.1]),use = "pairwise.complete.obs", method = "pearson") #0.4147454
+
+
+# Slope total
+summary(lm(TPM_MS_avg_CX3CR1[TPM_MS_avg_CX3CR1$TPM_mem>=0.1,]$log_CN_all ~ 
+     TPM_MS_avg_CX3CR1[TPM_MS_avg_CX3CR1$TPM_mem>=0.1,]$log_TPM_mem))
+# Slope 0.5301
+
+
+
+TPM_MS_avg_CX3CR1$mRNA_pt_ratio <- mapply("/",(TPM_MS_avg_CX3CR1$log_TPM_mem),(TPM_MS_avg_CX3CR1$log_CN_all))
+mean(as.numeric(TPM_MS_avg_CX3CR1$mRNA_pt_ratio),na.rm=T) # 0.3517841
+
+
+
+```
+
+
+## CD molecules mem
+```{r CD molecules mem}
+#TPM_MS_avg_CX3CR1
+
+CD_native <- read.delim("/home/ben/Analysis/RF_human/Gene_class_lists/CD_converted_list.csv", sep=";")
+CD_native <- merge(CD_native,TPM_MS_avg_CX3CR1,by.x="ID.Symbol", by.y="ID")
+
+CD_to_plot <- as.vector(c("CCR7","CD2","CD226","CD27","CD28","CD38","CD3D","CD3E","CD3G","CD40LG","CD44","CD47","CD5","CD55","CD6","CD8A","CD8B","CXCR4","FAS","FCGR3A","FCRL3","ICAM1","IL10RB","IL7R","ITGA4","ITGAL","ITGAM","ITGB1","ITGB2","KLRB1","KLRD1","LAG3","LAMP1","PECAM1","PTPRC","SELL","TLR3","TNFRSF14","TNFRSF8","TNFSF8"))
+CD_native$ID.Symbol
+CD_native$CN_avg_all
+
+ggplot(data=TPM_MS_avg_CX3CR1,aes(x=(log_TPM_mem),y=(log_CN_all)))+
+  geom_point(data=TPM_MS_avg_CX3CR1[TPM_MS_avg_CX3CR1$log_TPM_mem>-2,],alpha=1, stroke=0,size=2, color="grey")+
+  geom_point(data=CD_native, color="#ff77aa")+
+  ggrepel::geom_text_repel(data=CD_native[CD_native$ID %in% CD_to_plot,],aes(label=CD_native$ID.Symbol[CD_native$ID %in% CD_to_plot]), size=3, color="black", force = 1,min.segment.length = 0)+
+  geom_smooth(method = "lm", color="#ff77aa")+
+  scale_x_continuous(limits = c(-1,5),expand = c(0,0), breaks = c(-1,0,1,2,3,4,5))+
+  scale_y_continuous(limits = c(1,8),expand = c(0,0), breaks = c(1,2,3,4,5,6,7,8))+
+  theme_minimal()
+
+
+cor((CD_native$log_CN_all),(CD_native$log_TPM_mem),use = "pairwise.complete.obs", method = "spear") 
+cor((CD_native$log_CN_all),(CD_native$log_TPM_mem),use = "pairwise.complete.obs", method = "pear") 
+# spearman 0.5917168   |   pearson 0.571531
+
+dim(CD_native) # 105
+# Slope CD
+lm(TPM_MS_avg_CX3CR1[TPM_MS_avg_CX3CR1$ID %in% CD_native$ID.Symbol,]$log_CN_all ~ 
+     TPM_MS_avg_CX3CR1[TPM_MS_avg_CX3CR1$ID %in% CD_native$ID.Symbol,]$log_TPM_mem)
+# Slope 0.563
+
+slope_for_plot_exvivo <- NULL
+slope_for_plot_exvivo$CD <- 0.5784
+
+
+CD_native$mRNA_pt_ratio <- mapply("/",(CD_native$log_TPM_mem),(CD_native$log_CN_all))
+mean(as.numeric(CD_native$mRNA_pt_ratio),na.rm=T) # 0.39876
+max(TPM_MS_avg_CX3CR1$log_TPM_mem, na.rm = T)
+
+#write.table(CD_native,"CD_native_CX3CR1.csv", sep=";", dec=",", row.names = F)
+```
+
+
+
+
+## TF_CX3CR1 mem
+```{r TF_CX3CR1 mem}
+#TPM_MS_avg_CX3CR1
+
+TF_CX3CR1 <- read.delim("/home/ben/Analysis/RF_human/Gene_class_lists/protein_class_Transcription.tsv")
+
+TF_CX3CR1 <- merge(TPM_MS_avg_CX3CR1,TF_CX3CR1,by.x="ID",by.y="Gene")
+head(TF_CX3CR1)
+dim(TF_CX3CR1)
+
+ggplot(data=TPM_MS_avg_CX3CR1[TPM_MS_avg_CX3CR1$log_TPM_mem>0.1,],aes(x=(log_TPM_mem),y=(log_CN_all)))+
+  geom_point(data=TPM_MS_avg_CX3CR1[TPM_MS_avg_CX3CR1$log_TPM_mem>0.01,],alpha=1, stroke=0,size=2, color="grey")+
+  geom_point(data=TF_CX3CR1, color="#ee4035",stroke=0,size=2)+
+ ggrepel::geom_text_repel(data=TPM_MS_avg_CX3CR1[TPM_MS_avg_CX3CR1$ID=="TBX21" | TPM_MS_avg_CX3CR1$ID=="JUN"| TPM_MS_avg_CX3CR1$ID=="JUNB"| TPM_MS_avg_CX3CR1$ID=="EOMES"| TPM_MS_avg_CX3CR1$ID=="NFATC2"| TPM_MS_avg_CX3CR1$ID=="STAT1"| TPM_MS_avg_CX3CR1$ID=="STAT4"| TPM_MS_avg_CX3CR1$ID=="BACH2",],aes(label=ID), size=4, color="black",force = 20, min.segment.length = 0.01)+
+  geom_smooth(method = "lm",color="#ee4035")+
+  scale_x_continuous(limits = c(-1,5),expand = c(0,0), breaks = c(-1,0,1,2,3,4,5))+
+  scale_y_continuous(limits = c(1,8),expand = c(0,0), breaks = c(1,2,3,4,5,6,7,8))+
+  theme_minimal()
+
+
+cor(TPM_MS_avg_CX3CR1[TPM_MS_avg_CX3CR1$ID %in% TF_CX3CR1$ID,]$log_CN_all ,
+    TPM_MS_avg_CX3CR1[TPM_MS_avg_CX3CR1$ID %in% TF_CX3CR1$ID,]$log_TPM_mem, use = "pairwise.complete.obs", method = "spear") 
+cor(TPM_MS_avg_CX3CR1[TPM_MS_avg_CX3CR1$ID %in% TF_CX3CR1$ID,]$log_CN_all ,
+    TPM_MS_avg_CX3CR1[TPM_MS_avg_CX3CR1$ID %in% TF_CX3CR1$ID,]$log_TPM_mem ,use = "pairwise.complete.obs", method = "pear")
+# spearman 0.3078035   |   pearson 0.3179577
+
+dim(TPM_MS_avg_CX3CR1[TPM_MS_avg_CX3CR1$ID %in% TF_CX3CR1$ID,]) # 278
+
+
+# Slope TF
+lm(TPM_MS_avg_CX3CR1[TPM_MS_avg_CX3CR1$ID %in% TF_CX3CR1$ID,]$log_CN_all ~ 
+     TPM_MS_avg_CX3CR1[TPM_MS_avg_CX3CR1$ID %in% TF_CX3CR1$ID,]$log_TPM_mem)
+# Slope 0.417
+
+slope_for_plot_exvivo$TF_CX3CR1 <- 0.4108
+
+
+TF_CX3CR1$mRNA_pt_ratio <- mapply("/",(TF_CX3CR1$log_TPM_mem),(TF_CX3CR1$log_CN_all))
+mean(as.numeric(TF_CX3CR1$mRNA_pt_ratio),na.rm=T) # 0.4146572
+
+#write.table(TF_CX3CR1,"TF_CX3CR1.csv", sep=";", dec=",", row.names = F)
+```
+
+
+
+## ribo mem
+```{r ribo mem}
+#TPM_MS_avg_CX3CR1
+
+ribo_CX3CR1 <- read.delim("/home/ben/Analysis/RF_human/Gene_class_lists/protein_class_Ribosomal.tsv")
+
+ribo_CX3CR1 <- merge(ribo_CX3CR1,TPM_MS_avg_CX3CR1,by.x="Gene", by.y="ID")
+dim(ribo_CX3CR1) # 160 out of 177 ribo proteins !
+
+ribo_CX3CR1[ribo_CX3CR1$Gene.description %like% "Mito",]
+
+
+ggplot(data=TPM_MS_avg_CX3CR1[TPM_MS_avg_CX3CR1$log_TPM_mem>0.1,],aes(x=(log_TPM_mem),y=log10(CN_mem)))+
+  geom_point(data=TPM_MS_avg_CX3CR1[TPM_MS_avg_CX3CR1$log_TPM_mem>0.01,],alpha=1, stroke=0,size=2, color="grey")+
+  geom_point(data=ribo_CX3CR1, color="#4CBB17",stroke=0,size=3)+
+  geom_point(data=ribo_CX3CR1[ribo_CX3CR1$Gene.description %like% "Mito",],color="#1e8449", size=3, stroke=0)+
+ ggrepel::geom_text_repel(data=TPM_MS_avg_CX3CR1[TPM_MS_avg_CX3CR1$ID=="RPS25" | TPM_MS_avg_CX3CR1$ID=="RPL22"| TPM_MS_avg_CX3CR1$ID=="RPL10",],aes(label=ID), size=4, color="black",force = 20, min.segment.length = 0.01)+
+  geom_smooth(data=ribo_CX3CR1[ribo_CX3CR1$Gene.description %like% "Mito",],method = "lm",color="#1e8449")+
+  geom_smooth(data=ribo_CX3CR1[-grep("Mito",ribo_CX3CR1$Gene.description),],method = "lm",color="#4CBB17")+
+  scale_x_continuous(limits = c(-1,5),expand = c(0,0), breaks = c(-1,0,1,2,3,4,5))+
+  scale_y_continuous(limits = c(1,8),expand = c(0,0), breaks = c(1,2,3,4,5,6,7,8))+
+  theme_minimal()
+
+cor(ribo_CX3CR1[-grep("Mito",ribo_CX3CR1$Gene.description),]$CN_mem,ribo_CX3CR1[-grep("Mito",ribo_CX3CR1$Gene.description),]$log_TPM_mem,use = "pairwise.complete.obs", method = "spear") 
+cor(ribo_CX3CR1[-grep("Mito",ribo_CX3CR1$Gene.description),]$CN_mem,ribo_CX3CR1[-grep("Mito",ribo_CX3CR1$Gene.description),]$log_TPM_mem,use = "pairwise.complete.obs", method = "pear") 
+# spearman 0.4262144   |   pearson 0.1737167
+
+cor(ribo_CX3CR1[grep("Mito",ribo_CX3CR1$Gene.description),]$CN_mem,ribo_CX3CR1[grep("Mito",ribo_CX3CR1$Gene.description),]$log_TPM_mem,use = "pairwise.complete.obs", method = "spear") 
+cor(ribo_CX3CR1[grep("Mito",ribo_CX3CR1$Gene.description),]$CN_mem,ribo_CX3CR1[grep("Mito",ribo_CX3CR1$Gene.description),]$log_TPM_mem,use = "pairwise.complete.obs", method = "pear") 
+# spearman 0.3507855   |   pearson 0.2766396
+
+
+Mamma_ribo <- ribo_CX3CR1[-grep("Mito",ribo_CX3CR1$Gene.description),]
+Mito_ribo <- ribo_CX3CR1[grep("Mito",ribo_CX3CR1$Gene.description),]
+
+
+
+cor(ribo_CX3CR1[grep("Mito",ribo_CX3CR1$Gene.description),]$log_CN_all ,
+    ribo_CX3CR1[grep("Mito",ribo_CX3CR1$Gene.description),]$log_TPM_mem, use = "pairwise.complete.obs", method = "spear") 
+cor(ribo_CX3CR1[grep("Mito",ribo_CX3CR1$Gene.description),]$log_CN_all ,
+    ribo_CX3CR1[grep("Mito",ribo_CX3CR1$Gene.description),]$log_TPM_mem ,use = "pairwise.complete.obs", method = "pear")
+# spearman -0.3507855   |   pearson -0.3415575
+
+
+cor(ribo_CX3CR1[-grep("Mito",ribo_CX3CR1$Gene.description),]$log_CN_all ,
+    ribo_CX3CR1[-grep("Mito",ribo_CX3CR1$Gene.description),]$log_TPM_mem, use = "pairwise.complete.obs", method = "spear") 
+cor(ribo_CX3CR1[-grep("Mito",ribo_CX3CR1$Gene.description),]$log_CN_all ,
+    ribo_CX3CR1[-grep("Mito",ribo_CX3CR1$Gene.description),]$log_TPM_mem ,use = "pairwise.complete.obs", method = "pear")
+# spearman 0.4262144   |   pearson 0.6942229
+
+dim(ribo_CX3CR1[-grep("Mito",ribo_CX3CR1$Gene.description),]) # 91
+dim(ribo_CX3CR1[grep("Mito",ribo_CX3CR1$Gene.description),]) # 69
+
+
+
+# Slope ribo mito
+lm(ribo_CX3CR1[grep("Mito",ribo_CX3CR1$Gene.description),]$log_CN_all ~ 
+    ribo_CX3CR1[grep("Mito",ribo_CX3CR1$Gene.description),]$log_TPM_mem)
+# Slope -0.3595
+
+
+# Slope ribo mammalian
+lm(ribo_CX3CR1[-grep("Mito",ribo_CX3CR1$Gene.description),]$log_CN_all ~ 
+    ribo_CX3CR1[-grep("Mito",ribo_CX3CR1$Gene.description),]$log_TPM_mem)
+# Slope 0.6833
+
+slope_for_plot_exvivo$mito_ribo_CX3CR1 <- -0.3595
+slope_for_plot_exvivo$mamma_ribo_CX3CR1 <- 0.6833
+
+
+
+mean( mapply("/",(ribo_CX3CR1[grep("Mito",ribo_CX3CR1$Gene.description),]$log_TPM_mem),(ribo_CX3CR1[grep("Mito",ribo_CX3CR1$Gene.description),]$log_CN_all)),na.rm=T) # 0.3322198
+
+mean( mapply("/",(ribo_CX3CR1[-grep("Mito",ribo_CX3CR1$Gene.description),]$log_TPM_mem),(ribo_CX3CR1[-grep("Mito",ribo_CX3CR1$Gene.description),]$log_CN_all)),na.rm=T) # 0.5182064
+
+#write.table(ribo_CX3CR1,"ribo_CX3CR1.csv", sep=";", dec=",", row.names = F)
+
+
+
+```
+
+
+## RBPs mem
+```{r RBPs mem}
+castello <- read.delim("/home/ben/Analysis/RF_human/Gene_class_lists/RBP_Castello_et_al_2016.csv", sep=";",header=T) 
+castello <- data.frame(castello$Symbol)
+colnames(castello) <- "ID"
+dim(castello)
+
+eRIC <- read.delim("/home/ben/Analysis/RF_human/Gene_class_lists/Perez-Perri2018_RBP_eRIC.csv", sep=";",header=T) 
+eRIC <- data.frame(eRIC$gene_name)
+colnames(eRIC) <- "ID"
+dim(eRIC)
+
+tuschl <- read.delim("/home/ben/Analysis/RF_human/Gene_class_lists/Tuschl_2014.csv", sep=";",header=T) 
+dim(tuschl)
+colnames(tuschl) <- "ID"
+
+RBPs <- rbind(castello,eRIC,tuschl)
+head(RBPs)
+
+RBPs <- distinct(RBPs, RBPs$ID)
+dim(RBPs)
+exp(-3.09)
+
+RBP_CX3CR1 <- merge(RBPs,TPM_MS_avg_CX3CR1,by.x="RBPs$ID", by.y="ID")
+dim(RBP_CX3CR1) # 1475 out of 2026 RBP proteins !
+
+#subset(RBP,RBP$Gene.description %in% contains("mito"))
+RBP_CX3CR1[RBP_CX3CR1$Gene.description %like% "mito",]
+dim(RBP_CX3CR1[!RBP_CX3CR1$`RBPs$ID` %in% ribo_CX3CR1$Gene,])
+
+dim(RBP_CX3CR1[-grep("ribo", RBP_CX3CR1$Gene.description),])
+
+RBP_CX3CR1[RBP_CX3CR1$`RBPs$ID` %in% ribo_CX3CR1$Gene,]
+
+ggplot(data=TPM_MS_avg_CX3CR1[TPM_MS_avg_CX3CR1$log_TPM_mem>0.1,],aes(x=(log_TPM_mem),y=(log_CN_all)))+
+  geom_point(data=TPM_MS_avg_CX3CR1[TPM_MS_avg_CX3CR1$log_TPM_mem>0.01,],alpha=1, stroke=0,size=2, color="grey")+
+  geom_point(data=RBP_CX3CR1[!RBP_CX3CR1$`RBPs$ID` %in% ribo_CX3CR1$Gene,] ,color="#e59866", stroke=0, size=2)+
+  geom_point(color="#ee4035", stroke=0, size=3, alpha=1, data=RBP_CX3CR1[(RBP_CX3CR1$`RBPs$ID`=="ZFP36L1" | RBP_CX3CR1$`RBPs$ID`=="ILF3"| RBP_CX3CR1$`RBPs$ID`=="ELAVL1"| RBP_CX3CR1$`RBPs$ID`=="TIA1"| RBP_CX3CR1$`RBPs$ID`=="HNRNPL"| RBP_CX3CR1$`RBPs$ID`=="HNRNPLL"| RBP_CX3CR1$`RBPs$ID`=="CELF2"),])+
+  ggrepel::geom_text_repel(data=RBP_CX3CR1[RBP_CX3CR1$`RBPs$ID`=="ZFP36L1" | RBP_CX3CR1$`RBPs$ID`=="ILF3"| RBP_CX3CR1$`RBPs$ID`=="ELAVL1"| RBP_CX3CR1$`RBPs$ID`=="TIA1"| RBP_CX3CR1$`RBPs$ID`=="HNRNPL"| RBP_CX3CR1$`RBPs$ID`=="HNRNPLL"| RBP_CX3CR1$`RBPs$ID`=="CELF2",],aes(label=`RBPs$ID`), size=4, color="black", min.segment.length = 0.01,force = 20)+
+  geom_smooth(method = "lm",color="#ee4035")+
+  scale_x_continuous(limits = c(-1,5),expand = c(0,0), breaks = c(-1,0,1,2,3,4,5))+
+  scale_y_continuous(limits = c(1,8),expand = c(0,0), breaks = c(1,2,3,4,5,6,7,8))+
+  theme_minimal()
+
+dim(RBP_CX3CR1[!RBP_CX3CR1$`RBPs$ID` %in% ribo_CX3CR1$Gene,])
+
+cor((RBP_CX3CR1[!RBP_CX3CR1$`RBPs$ID` %in% ribo_CX3CR1$Gene,]$log_CN_all),
+    (RBP_CX3CR1[!RBP_CX3CR1$`RBPs$ID` %in% ribo_CX3CR1$Gene,]$log_TPM_mem),use = "pairwise.complete.obs", method = "spear") 
+cor((RBP_CX3CR1[!RBP_CX3CR1$`RBPs$ID` %in% ribo_CX3CR1$Gene,]$log_CN_all),
+    (RBP_CX3CR1[!RBP_CX3CR1$`RBPs$ID` %in% ribo_CX3CR1$Gene,]$log_TPM_mem),use = "pairwise.complete.obs", method = "pear") 
+# spearman 0.4197538   |   pearson 0.3861307
+
+# Slope ribo_CX3CR1 proteins
+lm(TPM_MS_avg_CX3CR1[TPM_MS_avg_CX3CR1$ID %in% RBP_CX3CR1$`RBPs$ID`,]$log_CN_all ~ 
+     TPM_MS_avg_CX3CR1[TPM_MS_avg_CX3CR1$ID %in% RBP_CX3CR1$`RBPs$ID`,]$log_TPM_mem)
+# Slope 0.6732
+
+slope_for_plot_exvivo$RBPs_CX3CR1 <- 0.6732
+
+#write.table(RBP_CX3CR1[!RBP_CX3CR1$`RBPs$ID` %in% ribo_CX3CR1$Gene,],"RBP_minus_ribo_CX3CR1.csv", sep=";", dec=",", row.names = F)
+
+mean( mapply("/",(RBP_CX3CR1[!RBP_CX3CR1$`RBPs$ID` %in% ribo_CX3CR1$Gene,]$log_TPM_mem),(RBP_CX3CR1[!RBP_CX3CR1$`RBPs$ID` %in% ribo_CX3CR1$Gene,]$log_CN_all)),na.rm=T) # 0.3525343
+
+```
+
+
+
+```{r TCA expression total}
+TCA <- read.delim("/home/ben/Analysis/RF_human/Gene_class_lists/protein_class_Citric.tsv")
+
+TCA_CX3CR1 <- merge(TCA,TPM_MS_avg_CX3CR1,by.x="Gene", by.y="ID")
+dim(TCA_CX3CR1) # 26 out of 30 TCA proteins !
+
+
+ggplot(TCA_CX3CR1,aes(x=log_TPM_mem,y=log_CN_all))+
+  geom_point(data=TPM_MS_avg_CX3CR1, color="grey", alpha=1, stroke=0,size=2)+
+  geom_smooth(method="lm", color="black")+
+  geom_point(color="#63ace5", stroke=0,size=3)+
+  ggrepel::geom_text_repel(data=TCA_CX3CR1[TCA_CX3CR1$Gene=="IDH1" | TCA_CX3CR1$Gene=="IDH2" | TCA_CX3CR1$Gene=="PCK2",],aes(label=Gene), size=4,color="darkblue",min.segment.length = 0.01,force = 15)+
+  scale_x_continuous(limits = c(-1,5),expand = c(0,0), breaks = c(-1,0,1,2,3,4,5))+
+  scale_y_continuous(limits = c(1,8),expand = c(0,0), breaks = c(1,2,3,4,5,6,7,8))+
+  theme_minimal()
+
+
+dim(TCA_CX3CR1)
+
+
+cor(TCA_CX3CR1$log_CN_all,TCA_CX3CR1$log_TPM_mem,use = "pairwise.complete.obs", method = "spear") 
+cor(TCA_CX3CR1$log_CN_all,TCA_CX3CR1$log_TPM_mem,use = "pairwise.complete.obs", method = "pear") 
+# spearman 0.4746154   |   pearson 0.6025833
+
+lm(TCA_CX3CR1$log_CN_all~TCA_CX3CR1$log_TPM_mem)
+# Slope 1.221
+
+slope_for_plot_exvivo$TCA_CX3CR1 <- 1.221
+
+
+#write.table(TCA_CX3CR1,"TCA_CX3CR1.csv", sep=";", dec=",", row.names = F)
+
+```
+
+
+## secreted_exvivo protein prot-RNA relation
+```{r secreted_exvivo protein prot-RNA relation}
+secreted_list <- read.delim("/home/ben/Analysis/RF_human/Gene_class_lists/Secreted_protein_filtered copy.csv", sep=";", header = T)
+colnames(secreted_list) <- "ID"
+
+secreted_exvivo <- read.delim("/home/ben/Analysis/RF_human/Gene_class_lists/Secreted_protein_filtered copy.csv", sep=";", header = T)
+colnames(secreted_exvivo) <- "ID"
+head(secreted_exvivo)
+dim(secreted_exvivo)
+#secreted_exvivo <- distinct(secreted_exvivo, Gene , .keep_all = T)
+secreted_exvivo <- data.frame(merge(TPM_MS_avg_CX3CR1,secreted_exvivo,by.x="ID",by.y="ID"))
+head(secreted_exvivo)
+dim(secreted_exvivo)
+
+secreted_exvivo <- subset(secreted_exvivo,secreted_exvivo$log_TPM_mem>-2)
+  
+ggplot(secreted_exvivo,aes(x=log_TPM_mem, y=log_CN_all))+
+  geom_point(data=TPM_MS_avg_CX3CR1, color="grey",stroke=0,size=2)+
+  geom_smooth(method = "lm",color="black")+
+  geom_point(color="#851e3e",stroke=0,size=3)+
+  ggrepel::geom_text_repel(label=secreted_exvivo$ID, size=4, force = 6,min.segment.length = 0.01)+
+  scale_x_continuous(expand = c(0,0), limits = c(-1,4.5)) +
+  scale_y_continuous(expand = c(0,0), limits = c(1.5,8)) +
+  theme_minimal()
+
+cor(secreted_exvivo$log_CN_all,secreted_exvivo$log_TPM_mem,use = "pairwise.complete.obs", method = "spear") 
+cor(secreted_exvivo$log_CN_all,secreted_exvivo$log_TPM_mem,use = "pairwise.complete.obs", method = "pear") 
+# spearman 0.5714286   |   pearson 0.5426186
+
+dim(secreted_exvivo) # 29
+
+lm(secreted_exvivo$log_CN_all~secreted_exvivo$log_TPM_mem)
+# Slope 0.3972
+
+slope_for_plot_exvivo$secreted <- 0.3972
+
+#write.table(secreted_exvivo,"Secreted_exvivo_CX3CR1.csv", sep=";", dec=",", row.names = F)
+
+```
+
+
+```{r slope ex vivo heatmap}
+slope_for_plot_exvivo <- data.frame(slope_for_plot_exvivo)
+
+col_fun = colorRamp2(c(-3, -1.5, 0, 1.5, 3), c("#053061","#579EC9","#FFFFFF","#D96651","#67001F"))
+pheatmap(slope_for_plot_exvivo, col_fun(seq(-3,3,by=0.01)) ,scale = "none",
+         clustering_distance_cols = "manhattan", cluster_cols = T, cluster_rows = F,
+         labels_col=colnames(slope_for_plot_exvivo),fontsize_row=0.1,
+         clustering_distance_rows = "manhattan",display_numbers=T)
+
+```
+
+
+### mRNA protein ratio
+```{r mRNA protein ratio}
+{ratio_CX3CR1_mem <- NULL
+
+ratio_CX3CR1_mem$secreted <- c(mean(secreted_exvivo$log_TPM_mem,na.rm=T), mean(secreted_exvivo$log_CN_all,na.rm=T),"Secreted")
+ratio_CX3CR1_mem$CD <- c(mean(CD_native$log_TPM_mem,na.rm=T), mean(CD_native$log_CN_all,na.rm=T),"CD")
+ratio_CX3CR1_mem$TF <- c(mean(TF_CX3CR1$log_TPM_mem,na.rm=T), mean(TF_CX3CR1$log_CN_all,na.rm=T),"TF")
+ratio_CX3CR1_mem$RBP <- c(mean(RBP_CX3CR1$log_TPM_mem,na.rm=T), mean(RBP_CX3CR1$log_CN_all,na.rm=T),"RBP")
+
+ratio_CX3CR1_mem$mito_ribo <- c(mean(ribo_CX3CR1[grep("Mito",ribo_CX3CR1$Gene.description),]$log_TPM_mem,na.rm=T),
+                                mean(ribo_CX3CR1[grep("Mito",ribo_CX3CR1$Gene.description),]$log_CN_all,na.rm=T),"mito_ribo")
+
+ratio_CX3CR1_mem$mamma_ribo <- c(mean(ribo_CX3CR1[-grep("Mito",ribo_CX3CR1$Gene.description),]$log_TPM_mem,na.rm=T),
+                                mean(ribo_CX3CR1[-grep("Mito",ribo_CX3CR1$Gene.description),]$log_CN_all,na.rm=T),"mamma_ribo")
+
+ratio_CX3CR1_mem$TCA <- c(mean(TCA_CX3CR1$log_TPM_mem,na.rm=T), mean(TCA_CX3CR1$log_CN_all,na.rm=T),"TCA")
+
+
+
+ratio_CX3CR1_mem <- data.frame(ratio_CX3CR1_mem)
+rownames(ratio_CX3CR1_mem) <- c("log_TPM_mem", "log_CN_all", "group")
+ratio_CX3CR1_mem <- data.frame(t(ratio_CX3CR1_mem))
+ratio_CX3CR1_mem[,1:2] <- lapply(ratio_CX3CR1_mem[,1:2], function(x) {
+    if(is.factor(x)) as.character(x) else x
+  })
+sapply(ratio_CX3CR1_mem, class)
+ratio_CX3CR1_mem[,1:2] <- lapply(ratio_CX3CR1_mem[,1:2], function(x) {
+    if(is.character(x)) as.numeric(x) else x
+  })
+sapply(ratio_CX3CR1_mem, class)
+
+}
+
+ggplot(ratio_CX3CR1_mem,aes(x=log_TPM_mem, y=log_CN_all))+
+  geom_point(data=TPM_MS_avg_CX3CR1, color="black",stroke=0,size=1, alpha=0.1)+
+  stat_density_2d(data=TPM_MS_avg_CX3CR1, aes(fill = stat(nlevel)), geom = "polygon", alpha=0.3)+
+  geom_point(data=ratio_CX3CR1_mem,stroke=2,size=4, aes(color=group))+
+  scale_color_manual(values=c("#ff77aa","#e59866","#851e3e", "#63ace5", "#ee4035", "#4CBB17", "#1e8449"))+
+  ggrepel::geom_text_repel(data=ratio_CX3CR1_mem,label=ratio_CX3CR1_mem$group, size=4, force = 6,min.segment.length = 0.01)+
+  scale_x_continuous(expand = c(0,0), limits = c(-1,5)) +
+  scale_y_continuous(expand = c(0,0), limits = c(1.5,8)) +
+  theme_minimal()
+
+10^5.140471
+5.140471-3.477872
+10^(mean(ratio_CX3CR1_mem[!ratio_CX3CR1_mem$group=="mamma_ribo",]$log_TPM_mem))
+```
+
+
+```{r AU rich elemetn and secreted at rest}
+AREs <- read.delim("/home/ben/Analysis/mRNA-Prot_integration/Complete_3UTR_Data_ARED_PLUS.csv", sep=";")
+
+secreted_exvivo_AREs <- merge(secreted_exvivo,AREs, by.x="ID", by.y="GeneName",all.x=T)
+secreted_exvivo_AREs$Cluster_col[is.na(secreted_exvivo_AREs$Cluster)]="#0ARE"
+secreted_exvivo_AREs$Cluster_col[secreted_exvivo_AREs$Cluster==1]="#1ARE"
+secreted_exvivo_AREs$Cluster_col[secreted_exvivo_AREs$Cluster>1]="#>1ARE"
+secreted_exvivo_AREs <- data.frame(secreted_exvivo_AREs)
+
+ggplot(secreted_exvivo_AREs[secreted_exvivo_AREs$log_TPM_mem>-2,], aes(x=log_TPM_mem, y=log_CN_all, color=Cluster_col))+
+  geom_point(data=TPM_MS_avg_CX3CR1[TPM_MS_avg_CX3CR1$log_TPM_mem>-2,], color="grey", stroke=0,size=2)+
+  geom_point()+
+  scale_color_manual(values=c("#FFC300", "#FF5733", "#581845"))+
+  ggrepel::geom_text_repel(data=secreted_exvivo_AREs[secreted_exvivo_AREs$log_TPM_mem>-2,], aes(label=ID))+
+  geom_smooth(data = secreted_exvivo_AREs[secreted_exvivo_AREs$Cluster_col=="#1ARE" & secreted_exvivo_AREs$log_TPM_mem>-2,], method = "lm",color ="#FF5733")+
+  geom_smooth(data = secreted_exvivo_AREs[secreted_exvivo_AREs$Cluster_col=="#0ARE" & secreted_exvivo_AREs$log_TPM_mem>-2,], method = "lm",color ="#FFC300")+
+  theme_classic()+
+  theme(aspect.ratio = 1)
+
+
+secreted_exvivo_AREs[secreted_exvivo_AREs$Cluster_col=="#0ARE" & secreted_exvivo_AREs$log_TPM_mem>0.02,]
+
+
+cor(secreted_exvivo_AREs[secreted_exvivo_AREs$Cluster_col=="#0ARE" & secreted_exvivo_AREs$log_TPM_mem>0.02,]$log_CN_all,
+    secreted_exvivo_AREs[secreted_exvivo_AREs$Cluster_col=="#0ARE" & secreted_exvivo_AREs$log_TPM_mem>0.02,]$log_TPM_mem,use = "pairwise.complete.obs", method = "spear") 
+
+cor(secreted_exvivo_AREs[secreted_exvivo_AREs$Cluster_col=="#0ARE" & secreted_exvivo_AREs$log_TPM_mem>0.02,]$log_CN_all,
+    secreted_exvivo_AREs[secreted_exvivo_AREs$Cluster_col=="#0ARE" & secreted_exvivo_AREs$log_TPM_mem>0.02,]$log_TPM_mem,use = "pairwise.complete.obs", method = "pear") 
+# spearman 0.5426087   |   pearson 0.4474198
+
+summary(lm(secreted_exvivo_AREs[secreted_exvivo_AREs$Cluster_col=="#0ARE",]$log_CN_all ~ secreted_exvivo_AREs[secreted_exvivo_AREs$Cluster_col=="#0ARE",]$log_TPM_mem))
+# Slope for #0ARE = 0.3615
+# p-value: 0.01521 *
+
+
+
+
+
+cor(secreted_exvivo_AREs[secreted_exvivo_AREs$Cluster_col=="#1ARE" & secreted_exvivo_AREs$log_TPM_mem>0.02,]$log_CN_all,
+    secreted_exvivo_AREs[secreted_exvivo_AREs$Cluster_col=="#1ARE" & secreted_exvivo_AREs$log_TPM_mem>0.02,]$log_TPM_mem,use = "pairwise.complete.obs", method = "spear") 
+
+cor(secreted_exvivo_AREs[secreted_exvivo_AREs$Cluster_col=="#1ARE" & secreted_exvivo_AREs$log_TPM_mem>0.02,]$log_CN_all,
+    secreted_exvivo_AREs[secreted_exvivo_AREs$Cluster_col=="#1ARE" & secreted_exvivo_AREs$log_TPM_mem>0.02,]$log_TPM_mem,use = "pairwise.complete.obs", method = "pear") 
+# spearman 0.8   |   pearson 0.932362
+
+summary(lm(secreted_exvivo_AREs[secreted_exvivo_AREs$Cluster_col=="#1ARE" ,]$log_CN_all ~ secreted_exvivo_AREs[secreted_exvivo_AREs$Cluster_col=="#1ARE",]$log_TPM_mem))
+# Slope for #1ARE = 0.3882
+# p-value: 0.06764
+
+
+
+
+```
+
+
+```{r ARE secreted ex vivo TPM only}
+secreted_AREs_TPM <- merge(TPM_avg_CX3CR1,AREs, by.x="ID", by.y="GeneName", all.x=T)
+
+#write.table(secreted_AREs_TPM,"ARE_codetected_exvivo_CX3CR1_TPM.csv", sep=";", dec=",", row.names = F)
+
+secreted_AREs_TPM$Cluster_col[is.na(secreted_AREs_TPM$Cluster)]="0"
+secreted_AREs_TPM$Cluster_col[secreted_AREs_TPM$Cluster==1]="1"
+secreted_AREs_TPM$Cluster_col[secreted_AREs_TPM$Cluster>1]=">1"
+secreted_AREs_TPM <- data.frame(secreted_AREs_TPM)
+secreted_AREs_TPM$TPM_all_log <- as.vector(secreted_AREs_TPM$TPM_mem,mode = "numeric")
+secreted_AREs_TPM$TPM_all_log <- log10(secreted_AREs_TPM$TPM_all_log)
+secreted_AREs_TPM$TPM_all_log <- lapply(secreted_AREs_TPM$TPM_all_log, function(x) replace(as.character(x), grep("-Inf", x), NA))
+secreted_AREs_TPM$TPM_all_log <- as.vector(secreted_AREs_TPM$TPM_all_log,mode = "numeric")
+secreted_AREs_TPM$TPM_all_log[is.na(secreted_AREs_TPM$TPM_all_log)]=NA
+secreted_AREs_TPM <- data.frame(secreted_AREs_TPM)
+class(secreted_AREs_TPM$TPM_all_log)
+
+secreted_AREs_TPM <- subset(secreted_AREs_TPM, secreted_AREs_TPM$TPM_mem>0.001)
+
+secreted_AREs_TPM[secreted_AREs_TPM$ID %in% secreted_list$ID,]
+
+ggplot(secreted_AREs_TPM[secreted_AREs_TPM$ID %in% secreted_list$ID,], aes(y=TPM_all_log, x=Cluster_col, color=Cluster_col))+
+  geom_point(stroke=0,size=2,position = "jitter")+
+  scale_color_manual(values=c("#FFC300", "#FF5733", "#581845"))+  
+  stat_summary(fun.y = median, fun.ymin = median, fun.ymax = median, geom = "crossbar", width = 0.8, color="red")+
+  scale_y_continuous(expand = c(0,0), limits = c(-2,5)) +
+  theme_classic()
+
+10^mean(secreted_AREs_TPM$TPM_all_log[secreted_AREs_TPM$Cluster_col=="0" & (secreted_AREs_TPM$ID %in% secreted_list$ID)]) 
+#1.21918
+10^mean(secreted_AREs_TPM$TPM_all_log[secreted_AREs_TPM$Cluster_col=="1" & (secreted_AREs_TPM$ID %in% secreted_list$ID)]) 
+#0.3864121
+10^mean(secreted_AREs_TPM$TPM_all_log[secreted_AREs_TPM$Cluster_col==">1" & (secreted_AREs_TPM$ID %in% secreted_list$ID)]) 
+#0.1428703
+
+dim(secreted_AREs_TPM[secreted_AREs_TPM$Cluster_col==">1" & (secreted_AREs_TPM$ID %in% secreted_list$ID),])
+
+```
+
+
+```{r ARE secreted ex vivo CN only}
+secreted_AREs_CN <- merge(MS_avg_CX3CR1,AREs, by.x="ID", by.y="GeneName", all.x=T)
+
+# write.table(secreted_AREs_CN,"ARE_codetected_exvivo_CX3CR1.csv", sep=";", dec=",", row.names = F)
+
+secreted_AREs_CN$Cluster_col[is.na(secreted_AREs_CN$Cluster)]="0"
+secreted_AREs_CN$Cluster_col[secreted_AREs_CN$Cluster==1]="1"
+secreted_AREs_CN$Cluster_col[secreted_AREs_CN$Cluster>1]=">1"
+secreted_AREs_CN$ID <- as.character(secreted_AREs_CN$ID)
+dim(secreted_AREs_CN)
+secreted_AREs_CN[6070,]$Cluster_col <- ">1"
+secreted_AREs_CN[6070,]$CN_avg_all <- 100
+secreted_AREs_CN[6070,]$ID <- "CCL5"
+
+secreted_AREs_CN <- data.frame(secreted_AREs_CN)
+#secreted_AREs_CN$CN_avg_all <- log10(secreted_AREs_CN$CN_avg_all)
+#secreted_AREs_CN <- lapply(secreted_AREs_CN, function(x) replace(as.character(x), grep("-Inf", x), NA))
+
+
+ggplot(secreted_AREs_CN[secreted_AREs_CN$ID %in% secreted_exvivo$ID,], aes(y=log10(CN_mem), x=Cluster_col, color=Cluster_col))+
+  geom_point(stroke=0,size=2,position = "jitter")+
+  scale_color_manual(values=c("#FFC300", "#FF5733", "#581845"))+  
+  stat_summary(fun.y = median, fun.ymin = median, fun.ymax = median,
+                 geom = "crossbar", width = 0.8, color="red")+
+  scale_y_continuous(expand = c(0,0), limits = c(1.5,8)) +
+  theme_classic()
+
+
+
+
+ggplot(secreted_AREs_CN, aes(y=log10(CN_mem), x=Cluster_col, color=Cluster_col))+
+  geom_point(stroke=0,size=2,position = "jitter")+
+  scale_color_manual(values=c("#FFC300", "#FF5733", "#581845"))+  
+  stat_summary(fun.y = median, fun.ymin = median, fun.ymax = median,
+                 geom = "crossbar", width = 0.8, color="red")+
+  ggtitle("AREs CN ex vivo",subtitle = "Padj(0-1)= 0.04805456 | Padj(0-<1)= 0.000396785")+
+  theme_classic()
+
+
+t.test(secreted_AREs_CN$CN_avg_all[secreted_AREs_CN$Cluster_col=="0"],secreted_AREs_CN$CN_avg_all[secreted_AREs_CN$Cluster_col=="1"])
+p.adjust(p=9.546e-06,n=5034, method = "BH")# Padj= 0.04805456
+t.test(secreted_AREs_CN$CN_avg_all[secreted_AREs_CN$Cluster_col=="0"],secreted_AREs_CN$CN_avg_all[secreted_AREs_CN$Cluster_col==">1"])
+p.adjust(p=8.594e-08,n=4617, method = "BH")# Padj= 0.000396785
+
+
+ggplot(secreted_AREs_TPM, aes(y=log10(log_TPM_mem), x=Cluster_col, color=Cluster_col))+
+  geom_point(stroke=0,size=2,position = "jitter")+
+  scale_color_manual(values=c("#FFC300", "#FF5733", "#581845"))+  
+  stat_summary(fun.y = median, fun.ymin = median, fun.ymax = median,
+                 geom = "crossbar", width = 0.8, color="red")+
+  ggtitle("AREs TPM_ALL ex vivo",subtitle = "Padj(0-1)= 1.19482e-12 |
+Padj(0-<1)= 1.705e-13")+
+  theme_classic()
+
+secreted_AREs_TPM[35341,]$Cluster_col <- ">1"
+secreted_AREs_TPM[35341,]$CN_avg_all <- 1
+secreted_AREs_TPM[35341,]$ID <- "CCL5"
+
+t.test(secreted_AREs_TPM$TPM_all_log[secreted_AREs_TPM$Cluster_col=="0"],secreted_AREs_TPM$TPM_all_log[secreted_AREs_TPM$Cluster_col=="1"])
+p.adjust(p=2.2e-16,n=5431, method = "BH")# Padj= 1.19482e-12
+t.test(secreted_AREs_TPM$TPM_all_log[secreted_AREs_TPM$Cluster_col=="0"],secreted_AREs_TPM$TPM_all_log[secreted_AREs_TPM$Cluster_col==">1"])
+p.adjust(p=2.2e-16,n=775, method = "BH")# Padj= 1.705e-13
+
+
+
+
+t.test(secreted_AREs_TPM$TPM_all_log[(secreted_AREs_TPM$ID %in% secreted_exvivo$ID) & secreted_AREs_TPM$Cluster_col=="0"],secreted_AREs_TPM$TPM_all_log[(secreted_AREs_TPM$ID %in% secreted_exvivo$ID) & secreted_AREs_TPM$Cluster_col=="1"])
+p.adjust(p=0.2022,n=4, method = "BH")# Padj= 0.8088
+t.test(secreted_AREs_TPM$TPM_all_log[(secreted_AREs_TPM$ID %in% secreted_exvivo$ID) & secreted_AREs_TPM$Cluster_col=="0"],secreted_AREs_TPM$TPM_all_log[(secreted_AREs_TPM$ID %in% secreted_exvivo$ID) & secreted_AREs_TPM$Cluster_col==">1"])
+p.adjust(p=NA,n=4, method = "BH")# Padj= NA
+
+
+
+t.test(secreted_AREs_CN$CN_avg_all[(secreted_AREs_CN$ID %in% secreted_exvivo$ID) & secreted_AREs_CN$Cluster_col=="0"],secreted_AREs_CN$CN_avg_all[(secreted_AREs_CN$ID %in% secreted_exvivo$ID) & secreted_AREs_CN$Cluster_col=="1"])
+p.adjust(p=0.03231,n=4, method = "BH")# Padj= 0.80775
+t.test(secreted_AREs_CN$CN_avg_all[(secreted_AREs_CN$ID %in% secreted_exvivo$ID) & secreted_AREs_CN$Cluster_col=="0"],secreted_AREs_CN$CN_avg_all[(secreted_AREs_CN$ID %in% secreted_exvivo$ID) & secreted_AREs_CN$Cluster_col==">1"])
+p.adjust(p=NA,n=4, method = "BH")# Padj= NA
+
+log10(6791)
+log10(164334)
+log10(164334)-log10(6791)
+
+
+
+```
+
+
+
+```{r CD and AREs}
+# first total TPM
+CD_list <- read.delim("/home/ben/Analysis/RF_human/Gene_class_lists/CD_converted_list.csv", sep=";")
+MS_avg_CX3CR1_AREs <- merge(TPM_MS_avg_CX3CR1,AREs, by.x="ID", by.y="GeneName", all.x=T)
+
+
+MS_avg_CX3CR1_AREs$Cluster_col[is.na(MS_avg_CX3CR1_AREs$Cluster)]="0"
+MS_avg_CX3CR1_AREs$Cluster_col[MS_avg_CX3CR1_AREs$Cluster==1]="1"
+MS_avg_CX3CR1_AREs$Cluster_col[MS_avg_CX3CR1_AREs$Cluster>1]=">1"
+
+
+ggplot(MS_avg_CX3CR1_AREs[MS_avg_CX3CR1_AREs$ID %in% CD_list$ID.Symbol ,], aes(y=(log_TPM_mem), x=Cluster_col, color=Cluster_col))+
+  geom_point(stroke=0,size=2,position = "jitter")+
+  scale_color_manual(values=c("#FFC300", "#FF5733", "#581845"))+  
+  stat_summary(fun.y = median, fun.ymin = median, fun.ymax = median,
+               geom = "crossbar", width = 0.8, color="red")+
+  scale_y_continuous(expand = c(0,0), limits = c(-2,5)) +
+  theme_classic()
+
+
+ggplot(MS_avg_CX3CR1_AREs[MS_avg_CX3CR1_AREs$ID %in% CD_list$ID.Symbol ,], aes(y=(log_CN_all), x=Cluster_col, color=Cluster_col))+
+  geom_point(stroke=0,size=2,position = "jitter")+
+  scale_color_manual(values=c("#FFC300", "#FF5733", "#581845"))+  
+  stat_summary(fun.y = median, fun.ymin = median, fun.ymax = median,
+               geom = "crossbar", width = 0.8, color="red")+
+  scale_y_continuous(expand = c(0,0), limits = c(1,8)) +
+  theme_classic()
+
+
+ggplot(MS_avg_CX3CR1_AREs[MS_avg_CX3CR1_AREs$ID %in% CD_list$ID.Symbol,], aes(x=log_TPM_mem,y=log_CN_all, color=Cluster_col ))+
+  geom_point(data=MS_avg_CX3CR1_AREs, color="grey", stroke=0,size=2)+
+  geom_point()+
+  scale_color_manual(values=c("#FFC300", "#FF5733", "#581845"))+
+  geom_smooth(data= MS_avg_CX3CR1_AREs[MS_avg_CX3CR1_AREs$ID %in% CD_list$ID.Symbol & MS_avg_CX3CR1_AREs$Cluster_col=="0",],method = "lm")+
+  geom_smooth(data= MS_avg_CX3CR1_AREs[MS_avg_CX3CR1_AREs$ID %in% CD_list$ID.Symbol & MS_avg_CX3CR1_AREs$Cluster_col=="1",],method = "lm")+
+    #geom_smooth(data= MS_avg_CX3CR1_AREs[MS_avg_CX3CR1_AREs$ID %in% CD_list$ID.Symbol & MS_avg_CX3CR1_AREs$Cluster_col==">1",],method = "lm")+
+  theme_classic()
+
+# Slope secreted 0 ARE
+summary(lm(MS_avg_CX3CR1_AREs[MS_avg_CX3CR1_AREs$ID %in% CD_list$ID.Symbol & MS_avg_CX3CR1_AREs$Cluster_col=="0",]$log_CN_all~
+   MS_avg_CX3CR1_AREs[MS_avg_CX3CR1_AREs$ID %in% CD_list$ID.Symbol & MS_avg_CX3CR1_AREs$Cluster_col=="0",]$log_TPM_mem))
+# Slope 0.5614
+# p-value: 7.079e-08
+
+# Slope secreted 1 ARE
+summary(lm(MS_avg_CX3CR1_AREs[MS_avg_CX3CR1_AREs$ID %in% CD_list$ID.Symbol & MS_avg_CX3CR1_AREs$Cluster_col=="1",]$log_CN_all~
+   MS_avg_CX3CR1_AREs[MS_avg_CX3CR1_AREs$ID %in% CD_list$ID.Symbol & MS_avg_CX3CR1_AREs$Cluster_col=="1",]$log_TPM_mem))
+# Slope 0.6767
+# p-value: 0.000149
+
+# Slope secreted >1 ARE
+summary(lm(MS_avg_CX3CR1_AREs[MS_avg_CX3CR1_AREs$ID %in% CD_list$ID.Symbol & MS_avg_CX3CR1_AREs$Cluster_col==">1",]$log_CN_all~
+   MS_avg_CX3CR1_AREs[MS_avg_CX3CR1_AREs$ID %in% CD_list$ID.Symbol & MS_avg_CX3CR1_AREs$Cluster_col==">1",]$log_TPM_mem))
+# Slope -1.459
+# p-value: 0.0237 (only 3 dots....!)
+
+
+
+```
+
+
+```{r ARE secreted ex vivo CN only}
+CD_AREs_CN <- merge(MS_avg_CX3CR1,AREs, by.x="ID", by.y="GeneName", all.x=T)
+
+CD_AREs_CN$Cluster_col[is.na(CD_AREs_CN$Cluster)]="0"
+CD_AREs_CN$Cluster_col[CD_AREs_CN$Cluster==1]="1"
+CD_AREs_CN$Cluster_col[CD_AREs_CN$Cluster>1]=">1"
+CD_AREs_CN$ID <- as.character(CD_AREs_CN$ID)
+dim(CD_AREs_CN)
+#CD_AREs_CN[6070,]$Cluster_col <- ">1"
+#CD_AREs_CN[6070,]$CN_avg_all <- 100
+#CD_AREs_CN[6070,]$ID <- "CCL5"
+
+CD_AREs_CN <- data.frame(CD_AREs_CN)
+#CD_AREs_CN$CN_avg_all <- log10(CD_AREs_CN$CN_avg_all)
+#CD_AREs_CN <- lapply(CD_AREs_CN, function(x) replace(as.character(x), grep("-Inf", x), NA))
+
+
+ggplot(CD_AREs_CN[CD_AREs_CN$ID %in% CD_list$ID,], aes(y=log10(CN_mem), x=Cluster_col, color=Cluster_col))+
+  geom_point(stroke=0,size=2,position = "jitter")+
+  scale_color_manual(values=c("#FFC300", "#FF5733", "#581845"))+  
+  stat_summary(fun.y = median, fun.ymin = median, fun.ymax = median,
+                 geom = "crossbar", width = 0.8, color="red")+
+  scale_y_continuous(expand = c(0,0), limits = c(1.5,8)) +
+  theme_classic()
+
+
+#t.test(CD_AREs_CN$CN_avg_all[CD_AREs_CN$Cluster_col=="0"],CD_AREs_CN$CN_avg_all[CD_AREs_CN$Cluster_col=="1"])
+#p.adjust(p=9.546e-06,n=5034, method = "BH")# Padj= 0.04805456
+#t.test(CD_AREs_CN$CN_avg_all[CD_AREs_CN$Cluster_col=="0"],CD_AREs_CN$CN_avg_all[CD_AREs_CN$Cluster_col==">1"])
+#p.adjust(p=8.594e-08,n=4617, method = "BH")# Padj= 0.000396785
+```
+
+
+```{r CD ARE ex vivo TPM only }
+CD_exvivo_AREs_TPM <- merge(TPM_avg_CX3CR1,AREs, by.x="ID", by.y="GeneName", all.x=T)
+
+CD_exvivo_AREs_TPM$Cluster_col[is.na(CD_exvivo_AREs_TPM$Cluster)]="0"
+CD_exvivo_AREs_TPM$Cluster_col[CD_exvivo_AREs_TPM$Cluster==1]="1"
+CD_exvivo_AREs_TPM$Cluster_col[CD_exvivo_AREs_TPM$Cluster>1]=">1"
+CD_exvivo_AREs_TPM <- data.frame(CD_exvivo_AREs_TPM)
+CD_exvivo_AREs_TPM$TPM_all_log <- as.vector(CD_exvivo_AREs_TPM$log_TPM_mem,mode = "numeric")
+CD_exvivo_AREs_TPM$TPM_all_log <- lapply(CD_exvivo_AREs_TPM$log_TPM_mem, function(x) replace(as.character(x), grep("-Inf", x), NA))
+CD_exvivo_AREs_TPM$TPM_all_log <- as.vector(CD_exvivo_AREs_TPM$TPM_all_log,mode = "numeric")
+CD_exvivo_AREs_TPM$TPM_all_log[is.na(CD_exvivo_AREs_TPM$TPM_all_log)]=NA
+CD_exvivo_AREs_TPM <- data.frame(CD_exvivo_AREs_TPM)
+class(CD_exvivo_AREs_TPM$TPM_all_log)
+
+CD_exvivo_AREs_TPM <- subset(CD_exvivo_AREs_TPM, CD_exvivo_AREs_TPM$log_TPM_mem>0.001)
+
+CD_exvivo_AREs_TPM <- CD_exvivo_AREs_TPM[CD_exvivo_AREs_TPM$ID %in% CD_list$ID.Symbol,]
+
+ggplot(CD_exvivo_AREs_TPM, aes(y=log10(log_TPM_mem), x=Cluster_col, color=Cluster_col))+
+  geom_point(stroke=0,size=2,position = "jitter")+
+  scale_color_manual(values=c("#FFC300", "#FF5733", "#581845"))+  
+  stat_summary(fun.y = median, fun.ymin = median, fun.ymax = median,
+                 geom = "crossbar", width = 0.8, color="red")+
+  ggtitle("AREs TPM_ALL ex vivo",subtitle = "Padj(0-1)= 1.19482e-12 |
+Padj(0-<1)= 1.705e-13")+
+  theme_classic()
+
+# CD_exvivo_AREs_TPM[35341,]$Cluster_col <- ">1"
+# CD_exvivo_AREs_TPM[35341,]$CN_avg_all <- 1
+# CD_exvivo_AREs_TPM[35341,]$ID <- "CCL5"
+
+t.test(CD_exvivo_AREs_TPM[CD_exvivo_AREs_TPM$Cluster_col=="0",]$log_TPM_mem, CD_exvivo_AREs_TPM[CD_exvivo_AREs_TPM$Cluster_col=="1",]$log_TPM_mem)
+p.adjust(p=0.2474,n=93, method = "BH")# Padj= 1
+
+t.test(CD_exvivo_AREs_TPM[CD_exvivo_AREs_TPM$Cluster_col=="0",]$log_TPM_mem, CD_exvivo_AREs_TPM[CD_exvivo_AREs_TPM$Cluster_col==">1",]$log_TPM_mem)
+p.adjust(p=0.685,n=11, method = "BH")# Padj= 1
+
+
+
+```
+
+
+# TF and ARE relation
+
+```{r TF and AREs}
+# first total TPM
+
+TF_CX3CR1 <- read.delim("/home/ben/Analysis/RF_human/Gene_class_lists/protein_class_Transcription.tsv")
+MS_avg_CX3CR1_AREs <- merge(TPM_MS_avg_CX3CR1,AREs, by.x="ID", by.y="GeneName", all.x=T)
+
+TF_CX3CR1_AREs <- MS_avg_CX3CR1_AREs[MS_avg_CX3CR1_AREs$ID %in% TF_CX3CR1$Gene,]
+
+TF_CX3CR1_AREs$Cluster_col[is.na(TF_CX3CR1_AREs$Cluster)]="0"
+TF_CX3CR1_AREs$Cluster_col[TF_CX3CR1_AREs$Cluster==1]="1"
+TF_CX3CR1_AREs$Cluster_col[TF_CX3CR1_AREs$Cluster>1]=">1"
+
+
+ggplot(TF_CX3CR1_AREs, aes(y=(log_TPM_mem), x=Cluster_col, color=Cluster_col))+
+  geom_point(stroke=0,size=2,position = "jitter")+
+  scale_color_manual(values=c("#FFC300", "#FF5733", "#581845"))+  
+  stat_summary(fun.y = median, fun.ymin = median, fun.ymax = median,
+               geom = "crossbar", width = 0.8, color="red")+
+  scale_y_continuous(expand = c(0,0), limits = c(-2,5)) +
+  theme_classic()
+
+
+ggplot(TF_CX3CR1_AREs, aes(y=(log_CN_all), x=Cluster_col, color=Cluster_col))+
+  geom_point(stroke=0,size=2,position = "jitter")+
+  scale_color_manual(values=c("#FFC300", "#FF5733", "#581845"))+  
+  stat_summary(fun.y = median, fun.ymin = median, fun.ymax = median,
+               geom = "crossbar", width = 0.8, color="red")+
+  scale_y_continuous(expand = c(0,0), limits = c(1,8)) +
+  theme_classic()
+
+
+ggplot(TF_CX3CR1_AREs, aes(x=log_TPM_mem,y=log_CN_all, color=Cluster_col ))+
+  geom_point(data=MS_avg_CX3CR1_AREs, color="grey", stroke=0,size=2)+
+  geom_point()+
+  scale_color_manual(values=c("#FFC300", "#FF5733", "#581845"))+
+  geom_smooth(data= TF_CX3CR1_AREs[TF_CX3CR1_AREs$Cluster_col=="0",],method = "lm")+
+  geom_smooth(data= TF_CX3CR1_AREs[TF_CX3CR1_AREs$Cluster_col=="1",],method = "lm")+
+  geom_smooth(data= TF_CX3CR1_AREs[TF_CX3CR1_AREs$Cluster_col==">1",],method = "lm")+
+  theme_classic()
+
+# Slope secreted 0 ARE
+summary(lm(TF_CX3CR1_AREs[TF_CX3CR1_AREs$Cluster_col=="0",]$log_CN_all~
+   TF_CX3CR1_AREs[TF_CX3CR1_AREs$Cluster_col=="0",]$log_TPM_mem))
+# Slope 0.5849
+# p-value: 5.85e-08
+
+
+# Slope secreted 1 ARE
+summary(lm(TF_CX3CR1_AREs[TF_CX3CR1_AREs$Cluster_col=="1",]$log_CN_all~
+   TF_CX3CR1_AREs[TF_CX3CR1_AREs$Cluster_col=="1",]$log_TPM_mem))
+# Slope 0.224
+# p-value: 0.03948
+
+# Slope secreted >1 ARE
+summary(lm(TF_CX3CR1_AREs[TF_CX3CR1_AREs$Cluster_col==">1",]$log_CN_all~
+   TF_CX3CR1_AREs[TF_CX3CR1_AREs$Cluster_col==">1",]$log_TPM_mem))
+# Slope -0.2516
+# p-value: 0.459 NS
+
+
+
+```
+
+
+```{r TF ex vivo CN only}
+CD_AREs_CN <- merge(MS_avg_CX3CR1,AREs, by.x="ID", by.y="GeneName", all.x=T)
+
+CD_AREs_CN$Cluster_col[is.na(CD_AREs_CN$Cluster)]="0"
+CD_AREs_CN$Cluster_col[CD_AREs_CN$Cluster==1]="1"
+CD_AREs_CN$Cluster_col[CD_AREs_CN$Cluster>1]=">1"
+CD_AREs_CN$ID <- as.character(CD_AREs_CN$ID)
+dim(CD_AREs_CN)
+#CD_AREs_CN[6070,]$Cluster_col <- ">1"
+#CD_AREs_CN[6070,]$CN_avg_all <- 100
+#CD_AREs_CN[6070,]$ID <- "CCL5"
+
+CD_AREs_CN <- data.frame(CD_AREs_CN)
+#CD_AREs_CN$CN_avg_all <- log10(CD_AREs_CN$CN_avg_all)
+#CD_AREs_CN <- lapply(CD_AREs_CN, function(x) replace(as.character(x), grep("-Inf", x), NA))
+
+
+ggplot(CD_AREs_CN[CD_AREs_CN$ID %in% CD_list$ID,], aes(y=log10(CN_mem), x=Cluster_col, color=Cluster_col))+
+  geom_point(stroke=0,size=2,position = "jitter")+
+  scale_color_manual(values=c("#FFC300", "#FF5733", "#581845"))+  
+  stat_summary(fun.y = median, fun.ymin = median, fun.ymax = median,
+                 geom = "crossbar", width = 0.8, color="red")+
+  scale_y_continuous(expand = c(0,0), limits = c(1.5,8)) +
+  theme_classic()
+
+
+#t.test(CD_AREs_CN$CN_avg_all[CD_AREs_CN$Cluster_col=="0"],CD_AREs_CN$CN_avg_all[CD_AREs_CN$Cluster_col=="1"])
+#p.adjust(p=9.546e-06,n=5034, method = "BH")# Padj= 0.04805456
+#t.test(CD_AREs_CN$CN_avg_all[CD_AREs_CN$Cluster_col=="0"],CD_AREs_CN$CN_avg_all[CD_AREs_CN$Cluster_col==">1"])
+#p.adjust(p=8.594e-08,n=4617, method = "BH")# Padj= 0.000396785
+```
+
+
+```{r TF ARE ex vivo TPM only }
+TF_exvivo_AREs_TPM <- merge(TPM_avg_CX3CR1,AREs, by.x="ID", by.y="GeneName", all.x=T)
+
+TF_exvivo_AREs_TPM$Cluster_col[is.na(TF_exvivo_AREs_TPM$Cluster)]="0"
+TF_exvivo_AREs_TPM$Cluster_col[TF_exvivo_AREs_TPM$Cluster==1]="1"
+TF_exvivo_AREs_TPM$Cluster_col[TF_exvivo_AREs_TPM$Cluster>1]=">1"
+TF_exvivo_AREs_TPM <- data.frame(TF_exvivo_AREs_TPM)
+TF_exvivo_AREs_TPM$TPM_all_log <- as.vector(TF_exvivo_AREs_TPM$log_TPM_mem,mode = "numeric")
+TF_exvivo_AREs_TPM$TPM_all_log <- lapply(TF_exvivo_AREs_TPM$log_TPM_mem, function(x) replace(as.character(x), grep("-Inf", x), NA))
+TF_exvivo_AREs_TPM$TPM_all_log <- as.vector(TF_exvivo_AREs_TPM$TPM_all_log,mode = "numeric")
+TF_exvivo_AREs_TPM$TPM_all_log[is.na(TF_exvivo_AREs_TPM$TPM_all_log)]=NA
+TF_exvivo_AREs_TPM <- data.frame(TF_exvivo_AREs_TPM)
+class(TF_exvivo_AREs_TPM$TPM_all_log)
+
+TF_exvivo_AREs_TPM <- subset(TF_exvivo_AREs_TPM, TF_exvivo_AREs_TPM$log_TPM_mem>0.001)
+
+TF_exvivo_AREs_TPM <- TF_exvivo_AREs_TPM[TF_exvivo_AREs_TPM$ID %in% TF_list$Gene,]
+
+ggplot(TF_exvivo_AREs_TPM, aes(y=log10(log_TPM_mem), x=Cluster_col, color=Cluster_col))+
+  geom_point(stroke=0,size=2,position = "jitter")+
+  scale_color_manual(values=c("#FFC300", "#FF5733", "#581845"))+  
+  stat_summary(fun.y = median, fun.ymin = median, fun.ymax = median,
+                 geom = "crossbar", width = 0.8, color="red")+
+  theme_classic()
+
+
+
+t.test(TF_exvivo_AREs_TPM[TF_exvivo_AREs_TPM$Cluster_col=="0",]$log_TPM_mem, TF_exvivo_AREs_TPM[TF_exvivo_AREs_TPM$Cluster_col=="1",]$log_TPM_mem)
+p.adjust(p=0.2376,n=698, method = "BH")# Padj= 1
+
+t.test(TF_exvivo_AREs_TPM[TF_exvivo_AREs_TPM$Cluster_col=="0",]$log_TPM_mem, TF_exvivo_AREs_TPM[TF_exvivo_AREs_TPM$Cluster_col==">1",]$log_TPM_mem)
+p.adjust(p=0.9573,n=116, method = "BH")# Padj= 1
+
+t.test(TF_exvivo_AREs_TPM[TF_exvivo_AREs_TPM$Cluster_col=="1",]$log_TPM_mem, TF_exvivo_AREs_TPM[TF_exvivo_AREs_TPM$Cluster_col==">1",]$log_TPM_mem)
+p.adjust(p=0.3804,n=180, method = "BH")# Padj= 1
+
+
+```
+
