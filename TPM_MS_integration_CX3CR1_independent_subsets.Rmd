@@ -1,0 +1,1168 @@
+---
+title: "TPM_MS_integration_CX3CR1_independent_subsets"
+author: "Benoit Nicolet"
+date: "7/15/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(plyr)
+library(dplyr)
+library("pheatmap")
+library(ggplot2)
+library("tximport")
+library(corrplot)
+library(data.table)
+library(viridis)
+library(biomaRt)
+library(circlize)
+
+#source("https://bioconductor.org/biocLite.R")
+#biocLite()
+knitr::opts_knit$set("/home/ben/Analysis/mRNA-Prot_integration/CX3CR1/")
+
+```
+
+```{r BiomaRt objects}
+#listEnsemblArchives()
+
+ensembl = useMart(biomart="ensembl", dataset="hsapiens_gene_ensembl", host = "https://apr2018.archive.ensembl.org")
+
+# attributes_ens <- listAttributes(ensembl) # Here getting the list of attributes. There are >3000 of them, so you can filter : ) 
+# View(attributes_ens)
+
+tx2gene <- getBM(attributes=c( "ensembl_transcript_id_version","ensembl_gene_id"), mart = ensembl)
+colnames(tx2gene) <- c("Tx_ID","Gene_ID")
+
+annotation_2G <- getBM(attributes=c("ensembl_gene_id","external_gene_name","percentage_gene_gc_content","gene_biotype"), mart = ensembl)
+
+```
+
+
+```{r importing new TPM}
+dirN <- file.path( "/home/ben/Analysis/mRNA-Prot_integration/CX3CR1/Concat_CX3CR1/")
+#Here is my sample list and setup for 
+{
+samples <-NULL
+samples$Sample.name <- c("Naive1_1.fastq_quant","Naive2_1.fastq_quant","Naive3_1.fastq_quant",  
+"CD62L-CX3CR1-1_1.fastq_quant","CD62L-CX3CR1-2_1.fastq_quant","CD62L-CX3CR1-3_1.fastq_quant","CD62L-CX3CR1-4_1.fastq_quant",
+"CD62L+CX3CR1-1_1.fastq_quant","CD62L+CX3CR1-2_1.fastq_quant","CD62L+CX3CR1-3_1.fastq_quant",
+"CD62L-CX3CR1+1_1.fastq_quant","CD62L-CX3CR1+2_1.fastq_quant","CD62L-CX3CR1+3_1.fastq_quant","CD62L-CX3CR1+4_1.fastq_quant",
+"CD62L+CX3CR1+1_1.fastq_quant","CD62L+CX3CR1+2_1.fastq_quant","CD62L+CX3CR1+3_1.fastq_quant")
+samples <- as.data.frame(samples)
+}
+head(samples)
+filesN <- file.path(dirN, samples$Sample.name, "quant.sf")
+#Here giving the right names for the sample names from the sample file
+names(filesN) <- paste0(samples$Sample.name)
+filesN
+
+allDataN <- lapply(filesN, function(.file){
+  
+   dat<-read.delim(.file, header=T,sep = "\t")
+   dat<-dat[,c(-2,-3,-5)]
+   dat <- dat[,1:2]
+   dat    # return the dataframe
+}) 
+# From Salmon output
+# column 1: Name (Tx ID)
+# column 2: Length
+# column 3: EffectiveLength
+# column 4: TPM
+# column 5: NumReads
+		
+# combine into a single dataframe
+TPM_CX3CR1 <- do.call(cbind, allDataN)
+TPM_CX3CR1$ID <- TPM_CX3CR1$Naive1_1.fastq_quant.Name
+TPM_CX3CR1 <- TPM_CX3CR1[, -grep("Name", colnames(TPM_CX3CR1))]
+
+head(TPM_CX3CR1)
+colnames(TPM_CX3CR1) <- c("Naive1","Naive2","Naive3",  
+"CD62L-CX3CR1-1","CD62L-CX3CR1-2","CD62L-CX3CR1-3","CD62L-CX3CR1-4",
+"CD62L+CX3CR1-1","CD62L+CX3CR1-2","CD62L+CX3CR1-3",
+"CD62L-CX3CR1+1","CD62L-CX3CR1+2","CD62L-CX3CR1+3","CD62L-CX3CR1+4",
+"CD62L+CX3CR1+1","CD62L+CX3CR1+2","CD62L+CX3CR1+3","ID")
+head(TPM_CX3CR1)
+
+
+### merging gene o with TPM_CX3CR1s ###
+TPM_CX3CR1_annotated <- merge(TPM_CX3CR1, tx2gene, by.y="Tx_ID", by.x="ID", all.x=T)
+dim(TPM_CX3CR1_annotated)
+
+TPM_CX3CR1_annotated <- merge(TPM_CX3CR1_annotated, annotation_2G, by.y="ensembl_gene_id", by.x="Gene_ID", all.x=T)
+TPM_CX3CR1_annotated <- subset(TPM_CX3CR1_annotated,TPM_CX3CR1_annotated$gene_biotype=="protein_coding")
+TPM_CX3CR1_annotated <- ddply(TPM_CX3CR1_annotated,"external_gene_name", numcolwise(sum))
+TPM_CX3CR1_annotated$percentage_gene_gc_content <- NULL
+
+dim(TPM_CX3CR1_annotated) # 20051
+sum(TPM_CX3CR1_annotated$Naive1) # not 1e6 anymore as we removed the non protein-coding tx!
+
+```
+
+
+## Importing protein copy number estimates
+```{r MS import}
+CX3CR1_data<- read.delim("/home/ben/Analysis/mRNA-Prot_integration/CX3CR1/CX3CR1_MS_proteomic_ruler_from_LFQ.txt", header = T, sep="\t", dec=",")
+dim(CX3CR1_data)
+
+CX3CR1_data <- subset(CX3CR1_data,CX3CR1_data$N..Average.molecular.mass>1)
+
+Copy_num_CX3CR1 <- CX3CR1_data %>% dplyr::select(tidyselect::contains("Copy.number"))
+Copy_num_CX3CR1$Gene.name <- CX3CR1_data$T..Gene.name
+Copy_num_CX3CR1$Gene.names <- CX3CR1_data$T..Gene.names
+Copy_num_CX3CR1$Protein.ID <- CX3CR1_data$T..Protein.IDs
+
+dim(Copy_num_CX3CR1)
+Copy_num_CX3CR1 <- subset(Copy_num_CX3CR1,!Copy_num_CX3CR1$Gene.names=="")
+dim(Copy_num_CX3CR1)
+
+
+colnames(Copy_num_CX3CR1) <- c("naive_1","naive_2","naive_3","naive_4","CD62negCX3CR1neg_1","CD62negCX3CR1neg_2","CD62negCX3CR1neg_3","CD62negCX3CR1neg_4","CD62negCX3CR1pos_1","CD62negCX3CR1pos_2","CD62negCX3CR1pos_3","CD62negCX3CR1pos_4","CD62posCX3CR1neg_1","CD62posCX3CR1neg_2","CD62posCX3CR1neg_3","CD62posCX3CR1neg_4","CD62posCX3CR1pos_1","CD62posCX3CR1pos_2","CD62posCX3CR1pos_3","CD62posCX3CR1pos_4","Gene.name","Gene.names","Protein.ID")
+
+Copy_num_CX3CR1$pt_ID <- mapply(strsplit(as.character(Copy_num_CX3CR1$Protein.ID),";"),FUN=function(x){(as.character(x)[1])})
+Copy_num_CX3CR1$pt_ID <- mapply(strsplit(as.character(Copy_num_CX3CR1$pt_ID),"-"),FUN=function(x){(as.character(x)[1])})
+
+uniprot <- read.delim("/home/ben/Analysis/mRNA-Prot_integration/uniprot-Human.tab", header = T)
+#head(uniprot)
+
+uniprot$Gene.names <- mapply(strsplit(as.character(uniprot$Gene.names)," "),FUN=function(x){(as.character(x)[1])})
+uniprot$Gene.names <- mapply(strsplit(as.character(uniprot$Gene.names),";"),FUN=function(x){(as.character(x)[1])})
+
+Copy_num_CX3CR1 <- merge(Copy_num_CX3CR1, uniprot, by.x="pt_ID", by.y="Entry", all.x=T)
+
+Copy_num_CX3CR1$Gene.names.x[Copy_num_CX3CR1$Gene.names.x==""]=NA
+Copy_num_CX3CR1$Gene.name <- mapply(strsplit(as.character(Copy_num_CX3CR1$Gene.name),";"),FUN=function(x){(as.character(x)[1])})
+
+Copy_num_CX3CR1$Gene.ID <- Copy_num_CX3CR1$Gene.names.y
+Copy_num_CX3CR1$Gene.ID <- 
+  ifelse(is.na(Copy_num_CX3CR1$Gene.ID)==TRUE,as.character(Copy_num_CX3CR1$Gene.name),as.character(Copy_num_CX3CR1$Gene.ID))	
+
+#hist(log10(Copy_num_CX3CR1$naive_1))
+#Copy_num_CX3CR1[22:23] <- NULL
+#Copy_num_CX3CR1[23:28] <- NULL
+#Copy_num_CX3CR1$pt_ID <- NULL
+#Copy_num_CX3CR1$Protein.ID<- NULL
+
+Copy_num_CX3CR1$ID <- mapply(strsplit(as.character(Copy_num_CX3CR1$Gene.ID),";"),FUN=function(x){(as.character(x)[1])})
+Copy_num_CX3CR1 <- data.frame("ID"=Copy_num_CX3CR1$ID, Copy_num_CX3CR1[1:23])
+dim(Copy_num_CX3CR1) ## 6056 protein found from 6342 genes
+Copy_num_CX3CR1 <- data.frame(Copy_num_CX3CR1)
+Copy_num_CX3CR1_dups <- Copy_num_CX3CR1[duplicated(Copy_num_CX3CR1$ID) | duplicated(Copy_num_CX3CR1$ID, fromLast=TRUE), ]
+Copy_num_CX3CR1 <- Copy_num_CX3CR1[!duplicated(Copy_num_CX3CR1$ID) & !duplicated(Copy_num_CX3CR1$ID, fromLast=TRUE),]
+  
+Copy_num_CX3CR1_dups <- ddply(Copy_num_CX3CR1_dups,"ID", numcolwise(sum))
+
+Copy_num_CX3CR1_dups <- cbind.data.frame("ID"=Copy_num_CX3CR1_dups$ID,"pt_ID"=Copy_num_CX3CR1_dups$ID,Copy_num_CX3CR1_dups[2:21],"Gene.name"=Copy_num_CX3CR1_dups$ID,"Gene.names.x"=Copy_num_CX3CR1_dups$ID)
+
+Copy_num_CX3CR1 <- rbind.data.frame(Copy_num_CX3CR1,Copy_num_CX3CR1_dups)
+dim(Copy_num_CX3CR1)# Tada!!! There are 6054 unique proteins!
+table(duplicated(Copy_num_CX3CR1$ID)) # No more duplicates!! Woop woop
+table(Copy_num_CX3CR1$ID ==Copy_num_CX3CR1$Gene.name) # There are some differences in gene names ... We ll see what works when merging with TPMs
+
+```
+
+## Averaging TPM per groups
+```{r Averaging TPM per groups}
+TPM_avg_CX3CR1 <- NULL
+TPM_avg_CX3CR1$ID <- TPM_CX3CR1_annotated$external_gene_name
+TPM_avg_CX3CR1$TPM_naive <- rowMeans(TPM_CX3CR1_annotated[2:4],na.rm = TRUE)
+TPM_avg_CX3CR1$TPM_62Lneg_CX3CR1neg <- rowMeans(TPM_CX3CR1_annotated[5:8],na.rm = TRUE)
+TPM_avg_CX3CR1$TPM_62Lneg_CX3CR1pos <- rowMeans(TPM_CX3CR1_annotated[12:15],na.rm = TRUE)
+TPM_avg_CX3CR1$TPM_62Lpos_CX3CR1neg <- rowMeans(TPM_CX3CR1_annotated[9:11],na.rm = TRUE)
+TPM_avg_CX3CR1$TPM_62Lpos_CX3CR1pos <- rowMeans(TPM_CX3CR1_annotated[16:18],na.rm = TRUE)
+TPM_avg_CX3CR1 <- data.frame(TPM_avg_CX3CR1)
+TPM_avg_CX3CR1$TPM_all <- rowMeans(TPM_avg_CX3CR1[2:6],na.rm = TRUE)
+#TPM_avg_CX3CR1 <- subset(TPM_avg_CX3CR1,TPM_avg_CX3CR1$TPM_all>-1)
+
+#sum(TPM_CX3CR1_annotated$Naive1)
+ggplot(TPM_avg_CX3CR1, aes(log10(TPM_all)))+
+  geom_histogram(binwidth=.2,fill="#579EC9", color="black")+
+  #geom_histogram(data=TPM_new_dist[TPM_new_dist$group == "sig",],binwidth=.5,fill="grey")+
+  scale_x_continuous(expand = c(0,0), limits = c(-3,6), breaks = c(-3,-2,-1,0,1,2,3,4,5,6))+
+  scale_y_continuous(expand = c(0,0), limits = c(0,2000)) +
+  geom_vline(xintercept = log10(median(TPM_avg_CX3CR1$TPM_all[TPM_avg_CX3CR1$TPM_all>0.001], na.rm = T)),color="red")+
+  theme_classic()
+
+log10(max(TPM_avg_CX3CR1$TPM_all))-log10(min(TPM_avg_CX3CR1$TPM_all[TPM_avg_CX3CR1$TPM_all>0.01])) # Spans 7.201629 power of 10!!
+
+dim(TPM_avg_CX3CR1[TPM_avg_CX3CR1$TPM_naive>0.1,]) #14491
+dim(TPM_avg_CX3CR1[TPM_avg_CX3CR1$TPM_62Lpos_CX3CR1neg>0.1,]) #14705
+dim(TPM_avg_CX3CR1[TPM_avg_CX3CR1$TPM_62Lneg_CX3CR1pos>0.1,]) #14532
+
+14181/20449*100
+
+
+
+```
+
+
+## Averaging copy numbers per groups
+```{r Averaging copy numbers per groups}
+
+MS_avg_CX3CR1 <- NULL
+MS_avg_CX3CR1$ID <- Copy_num_CX3CR1$ID
+MS_avg_CX3CR1$pt_ID <- Copy_num_CX3CR1$pt_ID
+MS_avg_CX3CR1$CN_naive <- rowMeans(Copy_num_CX3CR1[3:6],na.rm = TRUE)
+MS_avg_CX3CR1$CN_62Lneg_CX3CR1neg <- rowMeans(Copy_num_CX3CR1[7:10],na.rm = TRUE)
+MS_avg_CX3CR1$CN_62Lneg_CX3CR1pos <- rowMeans(Copy_num_CX3CR1[11:14],na.rm = TRUE)
+MS_avg_CX3CR1$CN_62Lpos_CX3CR1neg <- rowMeans(Copy_num_CX3CR1[15:18],na.rm = TRUE)
+MS_avg_CX3CR1$CN_62Lpos_CX3CR1pos <- rowMeans(Copy_num_CX3CR1[19:22],na.rm = TRUE)
+MS_avg_CX3CR1$Gene.name <- Copy_num_CX3CR1$Gene.name
+MS_avg_CX3CR1 <- data.frame(MS_avg_CX3CR1)
+MS_avg_CX3CR1$CN_avg_all <- rowMeans(MS_avg_CX3CR1[3:7],na.rm = TRUE)
+
+
+ggplot(MS_avg_CX3CR1, aes(log10(CN_62Lneg_CX3CR1neg)))+
+  geom_histogram(binwidth=.2,fill="#579EC9", color="black")+
+  #geom_histogram(data=TPM_new_dist[TPM_new_dist$group == "sig",],binwidth=.5,fill="grey")+
+  scale_x_continuous(expand = c(0,0), limits = c(0,8.5), breaks = c(0,1,2,3,4,5,6,7,8))+
+  scale_y_continuous(expand = c(0,0), limits = c(0,500),breaks = c(0,250,500))+
+  geom_vline(xintercept = log10(median(MS_avg_CX3CR1$CN_62Lneg_CX3CR1neg)),color="red")+
+  theme_classic()
+
+log10(max(MS_avg_CX3CR1$CN_avg_all))-log10(min(MS_avg_CX3CR1$CN_avg_all)) # Spans 6.234897 power of 10!!
+
+```
+
+
+
+## Cumulative RNA contribution
+```{r Cumulative RNA contribution}
+dim(TPM_avg_CX3CR1)
+Cumu_RNA_pt <- merge(TPM_avg_CX3CR1,MS_avg_CX3CR1,by="ID", all.x = T, all.y = T)
+
+Cumu_RNA_pt$perc_RNA_naive <- mapply("/",Cumu_RNA_pt$TPM_all,sum(Cumu_RNA_pt$TPM_all,na.rm = T))
+Cumu_RNA_pt$perc_RNA_naive <- mapply("*",100,Cumu_RNA_pt$perc_RNA_naive)
+
+Cumu_RNA_pt$perc_RNA_TEM <- mapply("/",Cumu_RNA_pt$TPM_62Lneg_CX3CR1pos,sum(Cumu_RNA_pt$TPM_62Lneg_CX3CR1pos,na.rm = T))
+Cumu_RNA_pt$perc_RNA_TEM <- mapply("*",100,Cumu_RNA_pt$perc_RNA_TEM)
+
+Cumu_RNA_pt$perc_RNA_TCM <- mapply("/",Cumu_RNA_pt$TPM_62Lpos_CX3CR1neg,sum(Cumu_RNA_pt$TPM_62Lpos_CX3CR1neg,na.rm = T))
+Cumu_RNA_pt$perc_RNA_TCM <- mapply("*",100,Cumu_RNA_pt$perc_RNA_TCM)
+
+
+Cumu_RNA_pt <- Cumu_RNA_pt[order(Cumu_RNA_pt$perc_RNA_naive,decreasing = T),]
+Cumu_RNA_pt$cumu_RNA_naive <- cumsum(Cumu_RNA_pt$perc_RNA_naive)
+
+Cumu_RNA_pt <- Cumu_RNA_pt[order(Cumu_RNA_pt$perc_RNA_TEM,decreasing = T),]
+Cumu_RNA_pt$cumu_RNA_TEM <- cumsum(Cumu_RNA_pt$perc_RNA_TEM)
+
+Cumu_RNA_pt <- Cumu_RNA_pt[order(Cumu_RNA_pt$perc_RNA_TCM,decreasing = T),]
+Cumu_RNA_pt$cumu_RNA_TCM <- cumsum(Cumu_RNA_pt$perc_RNA_TCM)
+
+
+Cumu_RNA_pt <- Cumu_RNA_pt[order(Cumu_RNA_pt$perc_RNA_naive,decreasing = T),]
+Cumu_RNA_pt$rank_RNA_naive <- 1:nrow(Cumu_RNA_pt)
+
+Cumu_RNA_pt <- Cumu_RNA_pt[order(Cumu_RNA_pt$perc_RNA_TEM,decreasing = T),]
+Cumu_RNA_pt$rank_RNA_TEM <- 1:nrow(Cumu_RNA_pt)
+
+Cumu_RNA_pt <- Cumu_RNA_pt[order(Cumu_RNA_pt$perc_RNA_TCM,decreasing = T),]
+Cumu_RNA_pt$rank_RNA_TCM <- 1:nrow(Cumu_RNA_pt)
+
+ggplot(Cumu_RNA_pt,aes(y=cumu_RNA_naive,x=(rank_RNA_naive)))+
+  geom_point()+
+  ggrepel::geom_text_repel(data=Cumu_RNA_pt[Cumu_RNA_pt$rank_RNA_naive<10,], aes(label=ID), nudge_x =900, min.segment.length = 0.01)+
+  scale_x_continuous(limits = c(0,19242))+
+  theme_minimal()
+
+dim(TPM_avg_CX3CR1[TPM_avg_CX3CR1$TPM_all>0.1,]) # 19242 genes expressed over 0.1TPM in Naive CD8
+19242 - 6013
+  
+ggplot(Cumu_RNA_pt,aes(y=cumu_RNA_TEM,x=(rank_RNA_TEM)))+
+  geom_point()+
+  ggrepel::geom_text_repel(data=Cumu_RNA_pt[Cumu_RNA_pt$rank_RNA_TEM<10,], aes(label=ID), nudge_x =900, min.segment.length = 0.01)+
+  scale_x_continuous(limits = c(0,19073))+
+  theme_minimal()
+
+
+ggplot(Cumu_RNA_pt,aes(y=cumu_RNA_TCM,x=(rank_RNA_TCM)))+
+  geom_point()+
+  ggrepel::geom_text_repel(data=Cumu_RNA_pt[Cumu_RNA_pt$rank_RNA_TCM<10,], aes(label=ID), nudge_x =900, min.segment.length = 0.01)+
+  scale_x_continuous(limits = c(0,19073))+
+  theme_minimal()
+
+
+dim(TPM_avg_CX3CR1[TPM_avg_CX3CR1$TPM_62Lneg_CX3CR1pos>0.1,]) # 19073 genes expressed over 0.1TPM in Naive CD8
+
+
+#write.table(Cumu_RNA_pt,"Cumu_RNA_pt_CX3CR1.csv", sep=";", dec=",", row.names = F)
+
+```
+
+
+
+## Cumulative pt contribution
+```{r Cumulative RNA contribution}
+#dim(TPM_MS_avg_CX3CR1)
+#Cumu_RNA_pt <- TPM_MS_avg_CX3CR1[1:14]
+
+Cumu_RNA_pt$perc_pt_naive <- mapply("/",Cumu_RNA_pt$CN_naive,sum(Cumu_RNA_pt$CN_naive,na.rm = T))
+Cumu_RNA_pt$perc_pt_naive <- mapply("*",100,Cumu_RNA_pt$perc_pt_naive)
+
+Cumu_RNA_pt$perc_pt_TEM <- mapply("/",Cumu_RNA_pt$CN_62Lneg_CX3CR1pos,sum(Cumu_RNA_pt$CN_62Lneg_CX3CR1pos,na.rm = T))
+Cumu_RNA_pt$perc_pt_TEM <- mapply("*",100,Cumu_RNA_pt$perc_pt_TEM)
+
+Cumu_RNA_pt$perc_pt_TCM <- mapply("/",Cumu_RNA_pt$CN_62Lpos_CX3CR1neg,sum(Cumu_RNA_pt$CN_62Lpos_CX3CR1neg,na.rm = T))
+Cumu_RNA_pt$perc_pt_TCM <- mapply("*",100,Cumu_RNA_pt$perc_pt_TCM)
+
+
+
+Cumu_RNA_pt <- Cumu_RNA_pt[order(Cumu_RNA_pt$perc_pt_naive,decreasing = T),]
+Cumu_RNA_pt$cumu_pt_naive <- cumsum(Cumu_RNA_pt$perc_pt_naive)
+
+Cumu_RNA_pt <- Cumu_RNA_pt[order(Cumu_RNA_pt$perc_pt_TEM,decreasing = T),]
+Cumu_RNA_pt$cumu_pt_TEM <- cumsum(Cumu_RNA_pt$perc_pt_TEM)
+
+Cumu_RNA_pt <- Cumu_RNA_pt[order(Cumu_RNA_pt$perc_pt_TCM,decreasing = T),]
+Cumu_RNA_pt$cumu_pt_TCM <- cumsum(Cumu_RNA_pt$perc_pt_TCM)
+
+
+
+
+Cumu_RNA_pt <- Cumu_RNA_pt[order(Cumu_RNA_pt$perc_pt_naive,decreasing = T),]
+Cumu_RNA_pt$rank_pt_naive <- 1:nrow(Cumu_RNA_pt)
+
+Cumu_RNA_pt <- Cumu_RNA_pt[order(Cumu_RNA_pt$perc_pt_TEM,decreasing = T),]
+Cumu_RNA_pt$rank_pt_TEM <- 1:nrow(Cumu_RNA_pt)
+
+Cumu_RNA_pt <- Cumu_RNA_pt[order(Cumu_RNA_pt$perc_pt_TCM,decreasing = T),]
+Cumu_RNA_pt$rank_pt_TCM <- 1:nrow(Cumu_RNA_pt)
+
+
+
+
+ggplot(Cumu_RNA_pt,aes(y=cumu_pt_naive,x=(rank_pt_naive)))+
+  geom_point()+
+  ggrepel::geom_text_repel(data=Cumu_RNA_pt[Cumu_RNA_pt$rank_pt_naive<10,], aes(label=ID), nudge_x =500, min.segment.length = 0.01)+
+  scale_x_continuous(limits = c(0,6100))+
+  theme_minimal()
+  
+  
+  ggplot(Cumu_RNA_pt,aes(y=cumu_pt_TEM,x=(rank_pt_TEM)))+
+  geom_point()+
+  ggrepel::geom_text_repel(data=Cumu_RNA_pt[Cumu_RNA_pt$rank_pt_TEM<10,], aes(label=ID), nudge_x =500, min.segment.length = 0.01)+
+  scale_x_continuous(limits = c(0,6100))+
+  theme_minimal()
+  
+  
+  ggplot(Cumu_RNA_pt,aes(y=cumu_pt_TCM,x=(rank_pt_TCM)))+
+  geom_point()+
+  ggrepel::geom_text_repel(data=Cumu_RNA_pt[Cumu_RNA_pt$rank_pt_TCM<10,], aes(label=ID), nudge_x =500, min.segment.length = 0.01)+
+  scale_x_continuous(limits = c(0,6100))+
+  theme_minimal()
+  
+#write.table(Cumu_RNA_pt,"Cumu_RNA_pt_CX3CR1.csv", sep=";", dec=",", row.names = F)
+  
+```
+
+
+## Combined cumulative RNA and pt contribution
+```{r Cumulative RNA contribution}
+
+RNA_cumu <- data.frame("group"="RNA","cum%"=Cumu_RNA_pt$cumu_RNA_naive,"rank"=Cumu_RNA_pt$rank_RNA_naive,"ID"=Cumu_RNA_pt$ID)
+MS_cumu <- data.frame("group"="MS","cum%"=Cumu_RNA_pt$cumu_pt_naive,"rank"=Cumu_RNA_pt$rank_pt_naive,"ID"= Cumu_RNA_pt$ID)
+
+RNA_MS_cumu <- rbind.data.frame(RNA_cumu,MS_cumu)
+RNA_MS_cumu$top[RNA_MS_cumu$rank<=5]="top"
+
+ggplot(RNA_MS_cumu, aes(x=log10(rank),y=cum., color=group))+
+  geom_point(size=2, stroke=0)+
+  scale_x_continuous(limits = c(0,4.5), expand = c(0.01,0))+
+  ggrepel::geom_text_repel(data=RNA_MS_cumu[RNA_MS_cumu$top=="top" & RNA_MS_cumu$group=="RNA",], aes(label=ID), nudge_x =-1, min.segment.length = 0.01)+
+  ggrepel::geom_text_repel(data=RNA_MS_cumu[RNA_MS_cumu$top=="top" & RNA_MS_cumu$group=="MS",], aes(label=ID), nudge_x =1, min.segment.length = 0.01)+
+  scale_y_continuous(limits = c(0,100), expand = c(0.01,0))+
+  theme_classic()
+
+```
+
+
+## ALL TPM-CN
+```{r ALL TPM-CN}
+table(duplicated(TPM_avg_CX3CR1$ID)) ## Should be all false!!!
+
+## Now for protein data
+table(duplicated(MS_avg_CX3CR1$ID)) ## Should be all false!!!
+
+MS_avg_CX3CR1$ID_equal_gene <- (MS_avg_CX3CR1$ID %in% MS_avg_CX3CR1$Gene.name)
+
+MS_avg_CX3CR1_extra <- subset(MS_avg_CX3CR1,MS_avg_CX3CR1$ID_equal_gene==FALSE)
+
+
+TPM_MS_avg_CX3CR1 <- merge(TPM_avg_CX3CR1,MS_avg_CX3CR1, by.y="ID", by.x="ID")
+TPM_MS_avg_CX3CR1_GName <- merge(TPM_avg_CX3CR1,MS_avg_CX3CR1_extra, by.y="Gene.name", by.x="ID")
+
+dim(TPM_MS_avg_CX3CR1)
+dim(TPM_MS_avg_CX3CR1_GName)
+
+TPM_MS_avg_CX3CR1$Gene.name <- NULL
+TPM_MS_avg_CX3CR1_GName$ID.y <- NULL
+
+colnames(TPM_MS_avg_CX3CR1) == colnames(TPM_MS_avg_CX3CR1_GName)
+
+TPM_MS_avg_CX3CR1 <- rbind.data.frame(TPM_MS_avg_CX3CR1,TPM_MS_avg_CX3CR1_GName)
+table(duplicated(TPM_MS_avg_CX3CR1)) # 6004 mRNA-protein pairs! 
+dim(TPM_MS_avg_CX3CR1)
+#TPM_MS_avg_CX3CR1 <- subset(TPM_MS_avg_CX3CR1,TPM_MS_avg_CX3CR1$CN_naive<10^7.1)
+
+ggplot(data=TPM_MS_avg_CX3CR1[TPM_MS_avg_CX3CR1$TPM_all>=0.1,],aes(x=log10(TPM_all),y=log10(CN_avg_all)))+
+  geom_point(alpha=1, stroke=0, size=2)+
+  geom_smooth(method = "lm",na.rm = T)+
+  scale_x_continuous(limits = c(-1,5),expand = c(0,0))+
+  scale_y_continuous(limits = c(1,8),expand = c(0,0))+
+  theme_minimal()
+
+cor(log10(TPM_MS_avg_CX3CR1$TPM_all[TPM_MS_avg_CX3CR1$TPM_all>=0.1]), log10(TPM_MS_avg_CX3CR1$CN_avg_all[TPM_MS_avg_CX3CR1$TPM_all>=0.1]),use = "pairwise.complete.obs", method = "spearman") 
+# 0.3716077
+
+cor(log10(TPM_MS_avg_CX3CR1$TPM_all[TPM_MS_avg_CX3CR1$TPM_all>=0.1]), log10(TPM_MS_avg_CX3CR1$CN_avg_all[TPM_MS_avg_CX3CR1$TPM_all>=0.1]),use = "pairwise.complete.obs", method = "pearson") 
+# 0.4129387
+
+# write.table(TPM_MS_avg_CX3CR1,"TPM_MS_avg_CX3CR1.csv",sep=";",dec=",", row.names = F)
+# write.table(TPM_avg_CX3CR1,"TPM_avg_CX3CR1.csv",sep=";",dec=",", row.names = F)
+
+
+TPM_for_RF <- data.frame("ID"=TPM_avg_CX3CR1$ID, "Tn_TPM"=TPM_avg_CX3CR1$TPM_naive, "Tcm_TPM"=TPM_avg_CX3CR1$TPM_62Lpos_CX3CR1neg, "Tem_TPM"=TPM_avg_CX3CR1$TPM_62Lneg_CX3CR1pos)
+
+# write.table(TPM_for_RF,"TPM_CX3CR1_for_RF.csv",sep=";",dec=",", row.names = F)
+
+
+
+CN_for_RF <- data.frame("ID"=TPM_MS_avg_CX3CR1$ID,"Tn_CN"=TPM_MS_avg_CX3CR1$CN_naive,"Tcm_CN"=TPM_MS_avg_CX3CR1$CN_62Lpos_CX3CR1neg, "Tem_CN"=TPM_MS_avg_CX3CR1$CN_62Lneg_CX3CR1pos)
+
+# write.table(CN_for_RF,"CN_CX3CR1_for_RF.csv",sep=";",dec=",", row.names = F)
+
+
+```
+
+
+
+## Tn TPM-CN
+```{r Tn TPM-CN}
+Tn_TPM_filt_CN <- TPM_MS_avg_CX3CR1[TPM_MS_avg_CX3CR1$TPM_naive>=0.1,]
+
+color_ben <- c("#053061","#579EC9","#FFFFFF","#D96651","#67001F")
+
+Tn_TPM_filt_CN <- Tn_TPM_filt_CN %>% mutate(dens= densCols(log10(TPM_naive),log10(CN_naive), colramp = colorRampPalette(color_ben)))
+
+Tn_TPM_filt_CN[3:7] <- NULL
+Tn_TPM_filt_CN[5:10] <- NULL
+
+
+ggplot(data=Tn_TPM_filt_CN,aes(x=log10(TPM_naive),y=log10(CN_naive),color=dens))+
+  geom_point(alpha=1, stroke=0, size=1)+
+  scale_x_continuous(limits = c(-1,4.5),expand = c(0,0))+
+  scale_y_continuous(limits = c(1,8),expand = c(0,0))+
+  scale_color_identity() +
+  geom_smooth(method = "lm",na.rm = T,inherit.aes = F,aes(x=log10(TPM_naive),y=log10(CN_naive),color="black"))+
+  theme_minimal()
+
+  # geom_point(data=Tn_TPM_filt_CN[Tn_TPM_filt_CN$ID %in% secreted_list$ID,], aes(x=log10(TPM_naive),y=log10(CN_naive), color="red"))+
+  # geom_smooth(data=Tn_TPM_filt_CN[Tn_TPM_filt_CN$ID %in% secreted_list$ID,], aes(x=log10(TPM_naive),y=log10(CN_naive), color="red"),method = "lm",na.rm = T)
+
+
+
+TPM_MS_avg_CX3CR1_TN <- TPM_MS_avg_CX3CR1
+TPM_MS_avg_CX3CR1_TN$TPM_TN_log <- log10(TPM_MS_avg_CX3CR1$TPM_naive)
+
+
+cor(log10(Tn_TPM_filt_CN$TPM_naive), log10(Tn_TPM_filt_CN$CN_naive),use = "pairwise.complete.obs", method = "spearman") 
+# 0.3706353
+cor(log10(Tn_TPM_filt_CN$TPM_naive), log10(Tn_TPM_filt_CN$CN_naive),use = "pairwise.complete.obs", method = "pearson") 
+# 0.4157212
+
+dim(TPM_avg_CX3CR1[TPM_avg_CX3CR1$TPM_naive>=0.1,]) #14495
+dim(TPM_MS_avg_CX3CR1[TPM_MS_avg_CX3CR1$CN_naive>0,]) #6004
+
+lm(log10(Tn_TPM_filt_CN$CN_naive)~
+   log10(Tn_TPM_filt_CN$TPM_naive))
+# 0.6385
+
+```
+
+
+## Tcm TPM-CN
+```{r Tcm TPM-CN}
+
+Tcm_TPM_filt_CN <- TPM_MS_avg_CX3CR1[TPM_MS_avg_CX3CR1$TPM_62Lpos_CX3CR1neg>=0.1,]
+
+Tcm_TPM_filt_CN$CN_62Lpos_CX3CR1neg_log10 <- log10(Tcm_TPM_filt_CN$CN_62Lpos_CX3CR1neg)
+
+color_ben <- c("#053061","#579EC9","#FFFFFF","#D96651","#67001F")
+
+Tcm_TPM_filt_CN <- Tcm_TPM_filt_CN %>% mutate(dens= densCols(log10(TPM_62Lpos_CX3CR1neg),log10(CN_62Lpos_CX3CR1neg), colramp = colorRampPalette(color_ben)))
+
+Tcm_TPM_filt_CN[2:4] <- NULL
+Tcm_TPM_filt_CN[3:4] <- NULL
+Tcm_TPM_filt_CN[4:6] <- NULL
+Tcm_TPM_filt_CN[5:7] <- NULL
+
+ggplot(data=Tcm_TPM_filt_CN,aes(x=log10(TPM_62Lpos_CX3CR1neg),y=log10(CN_62Lpos_CX3CR1neg),color=dens))+
+  geom_point(alpha=1, stroke=0, size=1)+
+  scale_x_continuous(limits = c(-1,4.5),expand = c(0,0))+
+  scale_y_continuous(limits = c(1,8),expand = c(0,0))+
+  theme_minimal()+
+  scale_color_identity() +
+  geom_smooth(method = "lm",na.rm = T, inherit.aes =F, aes(x=log10(TPM_62Lpos_CX3CR1neg), y=log10(CN_62Lpos_CX3CR1neg), color="black"))
+
+
+  #   geom_point(data=Tcm_TPM_filt_CN[Tcm_TPM_filt_CN$ID %in% secreted_list$ID,], aes(x=log10(TPM_62Lpos_CX3CR1neg),y=log10(CN_62Lpos_CX3CR1neg), color="red"))+
+  # geom_smooth(data=Tcm_TPM_filt_CN[Tcm_TPM_filt_CN$ID %in% secreted_list$ID,], aes(x=log10(TPM_62Lpos_CX3CR1neg),y=log10(CN_62Lpos_CX3CR1neg), color="red"),method = "lm",na.rm = T)
+
+
+cor(log10(TPM_MS_avg_CX3CR1$TPM_62Lpos_CX3CR1neg[TPM_MS_avg_CX3CR1$TPM_62Lpos_CX3CR1neg>=0.1]), log10(TPM_MS_avg_CX3CR1$CN_62Lpos_CX3CR1neg[TPM_MS_avg_CX3CR1$TPM_62Lpos_CX3CR1neg>=0.1]),use = "pairwise.complete.obs", method = "spearman") 
+# 0.3649473
+cor(log10(TPM_MS_avg_CX3CR1$TPM_62Lpos_CX3CR1neg[TPM_MS_avg_CX3CR1$TPM_62Lpos_CX3CR1neg>=0.1]), log10(TPM_MS_avg_CX3CR1$CN_62Lpos_CX3CR1neg[TPM_MS_avg_CX3CR1$TPM_62Lpos_CX3CR1neg>=0.1]),use = "pairwise.complete.obs", method = "pearson") 
+# 0.4030625
+
+dim(TPM_avg_CX3CR1[TPM_avg_CX3CR1$TPM_62Lpos_CX3CR1neg>=0.1,]) #14537
+dim(TPM_MS_avg_CX3CR1[TPM_MS_avg_CX3CR1$CN_62Lpos_CX3CR1neg>0,]) #6004
+
+
+lm(log10(TPM_MS_avg_CX3CR1[TPM_MS_avg_CX3CR1$TPM_62Lpos_CX3CR1neg>=0.1,]$CN_62Lpos_CX3CR1neg)~
+   log10(TPM_MS_avg_CX3CR1[TPM_MS_avg_CX3CR1$TPM_62Lpos_CX3CR1neg>=0.1,]$TPM_62Lpos_CX3CR1neg)) # 0.6555
+
+Tcm_TPM_filt_CN[Tcm_TPM_filt_CN$ID %in% CD_list$ID,]
+
+```
+
+
+
+## Tem TPM-CN
+```{r Tem TPM-CN}
+
+Tem_TPM_filt_CN <- TPM_MS_avg_CX3CR1[TPM_MS_avg_CX3CR1$TPM_62Lneg_CX3CR1pos>=0.1,]
+
+color_ben <- c("#053061","#579EC9","#FFFFFF","#D96651","#67001F")
+
+Tem_TPM_filt_CN <- Tem_TPM_filt_CN %>% mutate(dens= densCols(log10(TPM_62Lneg_CX3CR1pos),log10(CN_62Lneg_CX3CR1pos), colramp = colorRampPalette(color_ben)))
+
+Tem_TPM_filt_CN[2:3] <- NULL
+Tem_TPM_filt_CN[3:5] <- NULL
+Tem_TPM_filt_CN[4:5] <- NULL
+Tem_TPM_filt_CN[5:8] <- NULL
+
+#colorRampPalette(rev(rainbow(10, end = 4/6)))
+
+# d = densCols(x, y, colramp = colorRampPalette(rev(rainbow(10, end = 4/6)))))
+
+ggplot(data=Tem_TPM_filt_CN,aes(x=log10(TPM_62Lneg_CX3CR1pos),y=log10(CN_62Lneg_CX3CR1pos),color=dens))+
+  geom_point(alpha=1, stroke=0, size=1)+
+  scale_x_continuous(limits = c(-1,4.5),expand = c(0,0))+
+  scale_y_continuous(limits = c(1,8),expand = c(0,0))+
+  scale_color_identity() +
+  theme_minimal()+
+  geom_smooth(data=Tem_TPM_filt_CN,aes(x=log10(TPM_62Lneg_CX3CR1pos),y=log10(CN_62Lneg_CX3CR1pos),col="black"),inherit.aes = F,method = "lm",na.rm = T)
+  
+
+cor(log10(TPM_MS_avg_CX3CR1$TPM_62Lneg_CX3CR1pos[TPM_MS_avg_CX3CR1$TPM_62Lneg_CX3CR1pos>=0.1]), log10(TPM_MS_avg_CX3CR1$CN_62Lneg_CX3CR1pos[TPM_MS_avg_CX3CR1$TPM_62Lneg_CX3CR1pos>=0.1]),use = "pairwise.complete.obs", method = "spearman") 
+# 0.3861328
+cor(log10(TPM_MS_avg_CX3CR1$TPM_62Lneg_CX3CR1pos[TPM_MS_avg_CX3CR1$TPM_62Lneg_CX3CR1pos>=0.1]), log10(TPM_MS_avg_CX3CR1$CN_62Lneg_CX3CR1pos[TPM_MS_avg_CX3CR1$TPM_62Lneg_CX3CR1pos>=0.1]),use = "pairwise.complete.obs", method = "pearson") 
+# 0.4130181
+
+dim(TPM_avg_CX3CR1[TPM_avg_CX3CR1$TPM_62Lneg_CX3CR1pos>=0.1,]) #14709
+dim(TPM_MS_avg_CX3CR1[TPM_MS_avg_CX3CR1$CN_62Lneg_CX3CR1pos>0,]) #6004
+
+
+
+lm(log10(TPM_MS_avg_CX3CR1[TPM_MS_avg_CX3CR1$TPM_62Lneg_CX3CR1pos>=0.1,]$CN_62Lneg_CX3CR1pos)~
+   log10(TPM_MS_avg_CX3CR1[TPM_MS_avg_CX3CR1$TPM_62Lneg_CX3CR1pos>=0.1,]$TPM_62Lneg_CX3CR1pos))
+# 0.6318
+
+```
+
+
+
+
+## Preparing lists of genes per gene-class
+```{r Preparing lists of genes per gene-class}
+
+## TCA
+TCA_list <- read.delim("/home/ben/Analysis/RF_human/Gene_class_lists/protein_class_Citric.tsv")
+TCA_list <- data.frame("ID"=TCA_list$Gene)
+
+## ribosomal pt
+ribo_list <- read.delim("/home/ben/Analysis/RF_human/Gene_class_lists/protein_class_Ribosomal.tsv")
+mamm_ribo_list <- ribo_list[-grep("Mito",ribo_list$Gene.description),]
+mamm_ribo_list <- data.frame("ID"=mamm_ribo_list$Gene)
+
+## RBPs
+castello <- read.delim("/home/ben/Analysis/RF_human/Gene_class_lists/RBP_Castello_et_al_2016.csv", sep=";",header=T) 
+castello <- data.frame("ID"=castello$Symbol)
+eRIC <- read.delim("/home/ben/Analysis/RF_human/Gene_class_lists/Perez-Perri2018_RBP_eRIC.csv", sep=";",header=T) 
+eRIC <- data.frame("ID"=eRIC$gene_name)
+tuschl <- read.delim("/home/ben/Analysis/RF_human/Gene_class_lists/Tuschl_2014.csv", sep=";",header=T) 
+colnames(tuschl) <- "ID"
+
+RBP_list <- rbind(castello,eRIC,tuschl)
+RBP_list <- distinct(RBP_list, RBP_list$ID)
+colnames(RBP_list) <- "ID"
+
+RBP_list$ribo <- RBP_list$ID %in% ribo_list$Gene
+RBP_list <- subset(RBP_list,RBP_list$ribo==FALSE)
+RBP_list$ribo <- NULL
+dim(RBP_list) #1855 
+
+## CD
+CD_list <- read.delim("/home/ben/Analysis/RF_human/Gene_class_lists/CD_converted_list.csv", sep=";")
+colnames(CD_list) <- "ID"
+
+## Secreted
+secreted_list <- read.delim("/home/ben/Analysis/RF_human/Gene_class_lists/Secreted_protein_filtered copy.csv", sep=";", header = T)
+secreted_list <- data.frame("ID"=secreted_list$Gene)
+
+## TFs
+TF_list <- read.delim("/home/ben/Analysis/RF_human/Gene_class_lists/protein_class_Transcription.tsv")
+TF_list <- data.frame("ID"=TF_list$Gene)
+
+## Mito ribo pt
+ribo_list <- read.delim("/home/ben/Analysis/RF_human/Gene_class_lists/protein_class_Ribosomal.tsv")
+mito_ribo_list <- ribo_list[grep("Mito",ribo_list$Gene.description),]
+mito_ribo_list <- data.frame("ID"=mito_ribo_list$Gene)
+
+```
+
+## Gene-class characteristics in Tn subset
+```{r Gene-class characteristics in Tn subset}
+
+### 1. Correlation ###
+tn_corr <- NULL
+
+## TCA
+cor.test(log10(Tn_TPM_filt_CN[Tn_TPM_filt_CN$ID %in% TCA_list$ID,]$TPM_naive),
+log10(Tn_TPM_filt_CN[Tn_TPM_filt_CN$ID %in% TCA_list$ID,]$CN_naive), use = "pairwise.complete.obs", method = "pearson")# 0.001699
+
+cor(log10(Tn_TPM_filt_CN[Tn_TPM_filt_CN$ID %in% TCA_list$ID,]$TPM_naive),
+log10(Tn_TPM_filt_CN[Tn_TPM_filt_CN$ID %in% TCA_list$ID,]$CN_naive), use = "pairwise.complete.obs", method = "pearson") # 0.5951628
+tn_corr$TCA <- 0.5951628
+
+## mammalian ribosomal pt
+cor.test(log10(Tn_TPM_filt_CN[Tn_TPM_filt_CN$ID %in% mamm_ribo_list$ID,]$TPM_naive),
+log10(Tn_TPM_filt_CN[Tn_TPM_filt_CN$ID %in% mamm_ribo_list$ID,]$CN_naive), use = "pairwise.complete.obs", method = "pearson") #  2.416e-13
+
+cor(log10(Tn_TPM_filt_CN[Tn_TPM_filt_CN$ID %in% mamm_ribo_list$ID,]$TPM_naive),
+log10(Tn_TPM_filt_CN[Tn_TPM_filt_CN$ID %in% mamm_ribo_list$ID,]$CN_naive), use = "pairwise.complete.obs", method = "pearson") # 0.6713293
+tn_corr$mamm_ribo <- 0.6713293
+  
+## RBPs
+cor.test(log10(Tn_TPM_filt_CN[Tn_TPM_filt_CN$ID %in% RBP_list$ID,]$TPM_naive),
+log10(Tn_TPM_filt_CN[Tn_TPM_filt_CN$ID %in% RBP_list$ID,]$CN_naive), use = "pairwise.complete.obs", method = "pearson")# < 2.2e-16
+
+cor(log10(Tn_TPM_filt_CN[Tn_TPM_filt_CN$ID %in% RBP_list$ID,]$TPM_naive),
+log10(Tn_TPM_filt_CN[Tn_TPM_filt_CN$ID %in% RBP_list$ID,]$CN_naive), use = "pairwise.complete.obs", method = "pearson") # 0.4089988
+tn_corr$RBP <- 0.4089988
+  
+## CD
+cor.test(log10(Tn_TPM_filt_CN[Tn_TPM_filt_CN$ID %in% CD_list$ID,]$TPM_naive),
+log10(Tn_TPM_filt_CN[Tn_TPM_filt_CN$ID %in% CD_list$ID,]$CN_naive), use = "pairwise.complete.obs", method = "pearson")# 1.461e-08
+
+cor(log10(Tn_TPM_filt_CN[Tn_TPM_filt_CN$ID %in% CD_list$ID,]$TPM_naive),
+log10(Tn_TPM_filt_CN[Tn_TPM_filt_CN$ID %in% CD_list$ID,]$CN_naive), use = "pairwise.complete.obs", method = "pearson") # 0.5667619
+tn_corr$CD <- 0.5667619
+
+## Secreted
+cor.test(log10(Tn_TPM_filt_CN[Tn_TPM_filt_CN$ID %in% secreted_list$ID,]$TPM_naive),
+log10(Tn_TPM_filt_CN[Tn_TPM_filt_CN$ID %in% secreted_list$ID,]$CN_naive), use = "pairwise.complete.obs", method = "pearson")# 0.1319
+
+cor(log10(Tn_TPM_filt_CN[Tn_TPM_filt_CN$ID %in% secreted_list$ID,]$TPM_naive),
+log10(Tn_TPM_filt_CN[Tn_TPM_filt_CN$ID %in% secreted_list$ID,]$CN_naive), use = "pairwise.complete.obs", method = "pearson") # 0.3237046
+tn_corr$secreted <- 0.3237046
+
+## TFs
+cor.test(log10(Tn_TPM_filt_CN[Tn_TPM_filt_CN$ID %in% TF_list$ID,]$TPM_naive),
+log10(Tn_TPM_filt_CN[Tn_TPM_filt_CN$ID %in% TF_list$ID,]$CN_naive), use = "pairwise.complete.obs", method = "pearson")# 7.655e-11
+
+cor(log10(Tn_TPM_filt_CN[Tn_TPM_filt_CN$ID %in% TF_list$ID,]$TPM_naive),
+log10(Tn_TPM_filt_CN[Tn_TPM_filt_CN$ID %in% TF_list$ID,]$CN_naive), use = "pairwise.complete.obs", method = "pearson") # 0.3768154
+tn_corr$TF <- 0.3768154
+
+## Mito ribo pt
+cor.test(log10(Tn_TPM_filt_CN[Tn_TPM_filt_CN$ID %in% mito_ribo_list$ID,]$TPM_naive),
+log10(Tn_TPM_filt_CN[Tn_TPM_filt_CN$ID %in% mito_ribo_list$ID,]$CN_naive), use = "pairwise.complete.obs", method = "pearson")# 0.09245
+
+cor(log10(Tn_TPM_filt_CN[Tn_TPM_filt_CN$ID %in% mito_ribo_list$ID,]$TPM_naive),
+log10(Tn_TPM_filt_CN[Tn_TPM_filt_CN$ID %in% mito_ribo_list$ID,]$CN_naive), use = "pairwise.complete.obs", method = "pearson") # -0.2026648
+tn_corr$mito_ribo <- -0.2026648
+
+tn_corr <- data.frame(tn_corr)
+
+
+#_____________________________#
+
+### 2. Slope ###
+
+tn_slope <- NULL
+
+## TCA
+summary(lm(log10(Tn_TPM_filt_CN[Tn_TPM_filt_CN$ID %in% TCA_list$ID,]$CN_naive)~
+log10(Tn_TPM_filt_CN[Tn_TPM_filt_CN$ID %in% TCA_list$ID,]$TPM_naive)) ) # 0.8856 **
+tn_slope$TCA <- 0.8856
+
+## mammalian ribosomal pt
+summary(lm(log10(Tn_TPM_filt_CN[Tn_TPM_filt_CN$ID %in% mamm_ribo_list$ID,]$CN_naive)~
+log10(Tn_TPM_filt_CN[Tn_TPM_filt_CN$ID %in% mamm_ribo_list$ID,]$TPM_naive)) )# 0.5801 ***
+tn_slope$mamm_ribo <- 0.5801
+  
+## RBPs
+summary(lm(log10(Tn_TPM_filt_CN[Tn_TPM_filt_CN$ID %in% RBP_list$ID,]$CN_naive)~
+log10(Tn_TPM_filt_CN[Tn_TPM_filt_CN$ID %in% RBP_list$ID,]$TPM_naive)) )# 0.6903 ***
+tn_slope$RBP <- 0.6903
+  
+## CD
+summary(lm(log10(Tn_TPM_filt_CN[Tn_TPM_filt_CN$ID %in% CD_list$ID,]$CN_naive)~
+log10(Tn_TPM_filt_CN[Tn_TPM_filt_CN$ID %in% CD_list$ID,]$TPM_naive))) # 0.5794 ***
+tn_slope$CD <- 0.5794
+
+## Secreted
+summary(lm(log10(Tn_TPM_filt_CN[Tn_TPM_filt_CN$ID %in% secreted_list$ID,]$CN_naive)~
+log10(Tn_TPM_filt_CN[Tn_TPM_filt_CN$ID %in% secreted_list$ID,]$TPM_naive)) )# 0.5216 ' '
+tn_slope$secreted <- 0.5216
+
+## TFs
+summary(lm(log10(Tn_TPM_filt_CN[Tn_TPM_filt_CN$ID %in% TF_list$ID,]$CN_naive)~
+log10(Tn_TPM_filt_CN[Tn_TPM_filt_CN$ID %in% TF_list$ID,]$TPM_naive))) # 0.481 ***
+tn_slope$TF <- 0.481
+
+## Mito ribo pt
+summary(lm(log10(Tn_TPM_filt_CN[Tn_TPM_filt_CN$ID %in% mito_ribo_list$ID,]$CN_naive)~
+log10(Tn_TPM_filt_CN[Tn_TPM_filt_CN$ID %in% mito_ribo_list$ID,]$TPM_naive)) )# -0.184 '.'
+tn_slope$mito_ribo <- -0.184
+
+tn_slope <- data.frame(tn_slope)
+
+
+
+
+### 3. Spearman correlation ###
+tn_corr_spear <- NULL
+
+## TCA
+cor.test(log10(Tn_TPM_filt_CN[Tn_TPM_filt_CN$ID %in% TCA_list$ID,]$TPM_naive),
+log10(Tn_TPM_filt_CN[Tn_TPM_filt_CN$ID %in% TCA_list$ID,]$CN_naive), use = "pairwise.complete.obs", method = "spearman")# 0.01169
+
+cor(log10(Tn_TPM_filt_CN[Tn_TPM_filt_CN$ID %in% TCA_list$ID,]$TPM_naive),
+log10(Tn_TPM_filt_CN[Tn_TPM_filt_CN$ID %in% TCA_list$ID,]$CN_naive), use = "pairwise.complete.obs", method = "spearman") # 0.5007692
+tn_corr_spear$TCA <- 0.5007692
+
+## mammalian ribosomal pt
+cor.test(log10(Tn_TPM_filt_CN[Tn_TPM_filt_CN$ID %in% mamm_ribo_list$ID,]$TPM_naive),
+log10(Tn_TPM_filt_CN[Tn_TPM_filt_CN$ID %in% mamm_ribo_list$ID,]$CN_naive), use = "pairwise.complete.obs", method = "spearman") # 6.107e-06
+
+cor(log10(Tn_TPM_filt_CN[Tn_TPM_filt_CN$ID %in% mamm_ribo_list$ID,]$TPM_naive),
+log10(Tn_TPM_filt_CN[Tn_TPM_filt_CN$ID %in% mamm_ribo_list$ID,]$CN_naive), use = "pairwise.complete.obs", method = "spearman") # 0.4566065
+tn_corr_spear$mamm_ribo <- 0.4566065
+  
+## RBPs
+cor.test(log10(Tn_TPM_filt_CN[Tn_TPM_filt_CN$ID %in% RBP_list$ID,]$TPM_naive),
+log10(Tn_TPM_filt_CN[Tn_TPM_filt_CN$ID %in% RBP_list$ID,]$CN_naive), use = "pairwise.complete.obs", method = "spearman")# < 2.2e-16
+
+cor(log10(Tn_TPM_filt_CN[Tn_TPM_filt_CN$ID %in% RBP_list$ID,]$TPM_naive),
+log10(Tn_TPM_filt_CN[Tn_TPM_filt_CN$ID %in% RBP_list$ID,]$CN_naive), use = "pairwise.complete.obs", method = "spearman") # 0.3982998
+tn_corr_spear$RBP <- 0.3982998
+  
+## CD
+cor.test(log10(Tn_TPM_filt_CN[Tn_TPM_filt_CN$ID %in% CD_list$ID,]$TPM_naive),
+log10(Tn_TPM_filt_CN[Tn_TPM_filt_CN$ID %in% CD_list$ID,]$CN_naive), use = "pairwise.complete.obs", method = "spearman")# 9.775e-09
+
+cor(log10(Tn_TPM_filt_CN[Tn_TPM_filt_CN$ID %in% CD_list$ID,]$TPM_naive),
+log10(Tn_TPM_filt_CN[Tn_TPM_filt_CN$ID %in% CD_list$ID,]$CN_naive), use = "pairwise.complete.obs", method = "spearman") # 0.5804576
+tn_corr_spear$CD <- 0.5804576
+
+## Secreted
+cor.test(log10(Tn_TPM_filt_CN[Tn_TPM_filt_CN$ID %in% secreted_list$ID,]$TPM_naive),
+log10(Tn_TPM_filt_CN[Tn_TPM_filt_CN$ID %in% secreted_list$ID,]$CN_naive), use = "pairwise.complete.obs", method = "spearman")#0.1663
+
+cor(log10(Tn_TPM_filt_CN[Tn_TPM_filt_CN$ID %in% secreted_list$ID,]$TPM_naive),
+log10(Tn_TPM_filt_CN[Tn_TPM_filt_CN$ID %in% secreted_list$ID,]$CN_naive), use = "pairwise.complete.obs", method = "spearman") # 0.298419
+tn_corr_spear$secreted <- 0.298419
+
+## TFs
+cor.test(log10(Tn_TPM_filt_CN[Tn_TPM_filt_CN$ID %in% TF_list$ID,]$TPM_naive),
+log10(Tn_TPM_filt_CN[Tn_TPM_filt_CN$ID %in% TF_list$ID,]$CN_naive), use = "pairwise.complete.obs", method = "spearman")# 2.798e-09
+
+cor(log10(Tn_TPM_filt_CN[Tn_TPM_filt_CN$ID %in% TF_list$ID,]$TPM_naive),
+log10(Tn_TPM_filt_CN[Tn_TPM_filt_CN$ID %in% TF_list$ID,]$CN_naive), use = "pairwise.complete.obs", method = "spearman") # 0.348491
+tn_corr_spear$TF <- 0.348491
+
+## Mito ribo pt
+cor.test(log10(Tn_TPM_filt_CN[Tn_TPM_filt_CN$ID %in% mito_ribo_list$ID,]$TPM_naive),
+log10(Tn_TPM_filt_CN[Tn_TPM_filt_CN$ID %in% mito_ribo_list$ID,]$CN_naive), use = "pairwise.complete.obs", method = "spearman")# 0.06321
+
+cor(log10(Tn_TPM_filt_CN[Tn_TPM_filt_CN$ID %in% mito_ribo_list$ID,]$TPM_naive),
+log10(Tn_TPM_filt_CN[Tn_TPM_filt_CN$ID %in% mito_ribo_list$ID,]$CN_naive), use = "pairwise.complete.obs", method = "spearman") # -0.223375
+tn_corr_spear$mito_ribo <- -0.223375
+
+tn_corr_spear <- data.frame(tn_corr_spear)
+
+
+```
+
+
+
+## Gene-class characteristics in tcm subset
+```{r Gene-class characteristics in tcm subset}
+
+### 1. Correlation ###
+tcm_corr <- NULL
+
+## TCA
+cor(log10(Tcm_TPM_filt_CN[Tcm_TPM_filt_CN$ID %in% TCA_list$ID,]$TPM_62Lpos_CX3CR1neg),
+log10(Tcm_TPM_filt_CN[Tcm_TPM_filt_CN$ID %in% TCA_list$ID,]$CN_62Lpos_CX3CR1neg), use = "pairwise.complete.obs", method = "pearson") # 0.5961063
+tcm_corr$TCA <- 0.5961063
+
+## mammalian ribosomal pt
+cor(log10(Tcm_TPM_filt_CN[Tcm_TPM_filt_CN$ID %in% mamm_ribo_list$ID,]$TPM_62Lpos_CX3CR1neg),
+log10(Tcm_TPM_filt_CN[Tcm_TPM_filt_CN$ID %in% mamm_ribo_list$ID,]$CN_62Lpos_CX3CR1neg), use = "pairwise.complete.obs", method = "pearson") # 0.6840044
+tcm_corr$mamm_ribo <- 0.6840044
+  
+## RBPs
+cor(log10(Tcm_TPM_filt_CN[Tcm_TPM_filt_CN$ID %in% RBP_list$ID,]$TPM_62Lpos_CX3CR1neg),
+log10(Tcm_TPM_filt_CN[Tcm_TPM_filt_CN$ID %in% RBP_list$ID,]$CN_62Lpos_CX3CR1neg), use = "pairwise.complete.obs", method = "pearson") # 0.4229173
+tcm_corr$RBP <- 0.4229173
+  
+## CD
+cor(log10(Tcm_TPM_filt_CN[Tcm_TPM_filt_CN$ID %in% CD_list$ID,]$TPM_62Lpos_CX3CR1neg),
+log10(Tcm_TPM_filt_CN[Tcm_TPM_filt_CN$ID %in% CD_list$ID,]$CN_62Lpos_CX3CR1neg), use = "pairwise.complete.obs", method = "pearson") # 0.5770352
+tcm_corr$CD <- 0.5770352
+
+## Secreted
+cor(log10(Tcm_TPM_filt_CN[Tcm_TPM_filt_CN$ID %in% secreted_list$ID,]$TPM_62Lpos_CX3CR1neg),
+log10(Tcm_TPM_filt_CN[Tcm_TPM_filt_CN$ID %in% secreted_list$ID,]$CN_62Lpos_CX3CR1neg), use = "pairwise.complete.obs", method = "pearson") # 0.3007304
+tcm_corr$secreted <- 0.3007304
+
+## TFs
+cor(log10(Tcm_TPM_filt_CN[Tcm_TPM_filt_CN$ID %in% TF_list$ID,]$TPM_62Lpos_CX3CR1neg),
+log10(Tcm_TPM_filt_CN[Tcm_TPM_filt_CN$ID %in% TF_list$ID,]$CN_62Lpos_CX3CR1neg), use = "pairwise.complete.obs", method = "pearson") # 0.300007
+tcm_corr$TF <- 0.300007
+
+## Mito ribo pt
+cor(log10(Tcm_TPM_filt_CN[Tcm_TPM_filt_CN$ID %in% mito_ribo_list$ID,]$TPM_62Lpos_CX3CR1neg),
+log10(Tcm_TPM_filt_CN[Tcm_TPM_filt_CN$ID %in% mito_ribo_list$ID,]$CN_62Lpos_CX3CR1neg), use = "pairwise.complete.obs", method = "pearson") # -0.2405755
+tcm_corr$mito_ribo <- -0.2405755
+
+tcm_corr <- data.frame(tcm_corr)
+
+
+#_____________________________#
+
+### 2. Slope ###
+
+tcm_slope <- NULL
+
+## TCA
+summary(lm(log10(Tcm_TPM_filt_CN[Tcm_TPM_filt_CN$ID %in% TCA_list$ID,]$CN_62Lpos_CX3CR1neg)~
+log10(Tcm_TPM_filt_CN[Tcm_TPM_filt_CN$ID %in% TCA_list$ID,]$TPM_62Lpos_CX3CR1neg)) ) # 1.201 **
+tcm_slope$TCA <- 1.201
+
+## mammalian ribosomal pt
+summary(lm(log10(Tcm_TPM_filt_CN[Tcm_TPM_filt_CN$ID %in% mamm_ribo_list$ID,]$CN_62Lpos_CX3CR1neg)~
+log10(Tcm_TPM_filt_CN[Tcm_TPM_filt_CN$ID %in% mamm_ribo_list$ID,]$TPM_62Lpos_CX3CR1neg))) # 0.7083 ***
+tcm_slope$mamm_ribo <- 0.7083
+  
+## RBPs
+summary(lm(log10(Tcm_TPM_filt_CN[Tcm_TPM_filt_CN$ID %in% RBP_list$ID,]$CN_62Lpos_CX3CR1neg)~
+log10(Tcm_TPM_filt_CN[Tcm_TPM_filt_CN$ID %in% RBP_list$ID,]$TPM_62Lpos_CX3CR1neg)) )# 0.7489 ***
+tcm_slope$RBP <- 0.7489
+  
+## CD
+summary(lm(log10(Tcm_TPM_filt_CN[Tcm_TPM_filt_CN$ID %in% CD_list$ID,]$CN_62Lpos_CX3CR1neg)~
+log10(Tcm_TPM_filt_CN[Tcm_TPM_filt_CN$ID %in% CD_list$ID,]$TPM_62Lpos_CX3CR1neg)) )# 0.5803 ***
+tcm_slope$CD <- 0.5803
+
+## Secreted
+summary(lm(log10(Tcm_TPM_filt_CN[Tcm_TPM_filt_CN$ID %in% secreted_list$ID,]$CN_62Lpos_CX3CR1neg)~
+log10(Tcm_TPM_filt_CN[Tcm_TPM_filt_CN$ID %in% secreted_list$ID,]$TPM_62Lpos_CX3CR1neg)) )# 0.2782 *
+tcm_slope$secreted <- 0.2782
+
+## TFs
+summary(lm(log10(Tcm_TPM_filt_CN[Tcm_TPM_filt_CN$ID %in% TF_list$ID,]$CN_62Lpos_CX3CR1neg)~
+log10(Tcm_TPM_filt_CN[Tcm_TPM_filt_CN$ID %in% TF_list$ID,]$TPM_62Lpos_CX3CR1neg))) # 0.4519  ***
+tcm_slope$TF <- 0.4519
+
+## Mito ribo pt
+summary(lm(log10(Tcm_TPM_filt_CN[Tcm_TPM_filt_CN$ID %in% mito_ribo_list$ID,]$CN_62Lpos_CX3CR1neg)~
+log10(Tcm_TPM_filt_CN[Tcm_TPM_filt_CN$ID %in% mito_ribo_list$ID,]$TPM_62Lpos_CX3CR1neg))) # -0.3357 ' '
+tcm_slope$mito_ribo <- -0.3357 
+
+tcm_slope <- data.frame(tcm_slope)
+
+
+
+### 3. Spearman's correlation ###
+tcm_corr_spear <- NULL
+
+## TCA
+cor(log10(Tcm_TPM_filt_CN[Tcm_TPM_filt_CN$ID %in% TCA_list$ID,]$TPM_62Lpos_CX3CR1neg),
+log10(Tcm_TPM_filt_CN[Tcm_TPM_filt_CN$ID %in% TCA_list$ID,]$CN_62Lpos_CX3CR1neg), use = "pairwise.complete.obs", method = "spearman") # 0.4861538
+tcm_corr_spear$TCA <- 0.4861538
+
+## mammalian ribosomal pt
+cor(log10(Tcm_TPM_filt_CN[Tcm_TPM_filt_CN$ID %in% mamm_ribo_list$ID,]$TPM_62Lpos_CX3CR1neg),
+log10(Tcm_TPM_filt_CN[Tcm_TPM_filt_CN$ID %in% mamm_ribo_list$ID,]$CN_62Lpos_CX3CR1neg), use = "pairwise.complete.obs", method = "spearman") # 0.3864032
+tcm_corr_spear$mamm_ribo <- 0.3864032
+  
+## RBPs
+cor(log10(Tcm_TPM_filt_CN[Tcm_TPM_filt_CN$ID %in% RBP_list$ID,]$TPM_62Lpos_CX3CR1neg),
+log10(Tcm_TPM_filt_CN[Tcm_TPM_filt_CN$ID %in% RBP_list$ID,]$CN_62Lpos_CX3CR1neg), use = "pairwise.complete.obs", method = "spearman") # 0.4174094
+tcm_corr_spear$RBP <- 0.4174094
+  
+## CD
+cor(log10(Tcm_TPM_filt_CN[Tcm_TPM_filt_CN$ID %in% CD_list$ID,]$TPM_62Lpos_CX3CR1neg),
+log10(Tcm_TPM_filt_CN[Tcm_TPM_filt_CN$ID %in% CD_list$ID,]$CN_62Lpos_CX3CR1neg), use = "pairwise.complete.obs", method = "spearman") # 0.5770352
+tcm_corr_spear$CD <- 0.6302662
+
+## Secreted
+cor(log10(Tcm_TPM_filt_CN[Tcm_TPM_filt_CN$ID %in% secreted_list$ID,]$TPM_62Lpos_CX3CR1neg),
+log10(Tcm_TPM_filt_CN[Tcm_TPM_filt_CN$ID %in% secreted_list$ID,]$CN_62Lpos_CX3CR1neg), use = "pairwise.complete.obs", method = "spearman") # 0.4576923
+tcm_corr_spear$secreted <- 0.4576923
+
+## TFs
+cor(log10(Tcm_TPM_filt_CN[Tcm_TPM_filt_CN$ID %in% TF_list$ID,]$TPM_62Lpos_CX3CR1neg),
+log10(Tcm_TPM_filt_CN[Tcm_TPM_filt_CN$ID %in% TF_list$ID,]$CN_62Lpos_CX3CR1neg), use = "pairwise.complete.obs", method = "spearman") # 0.3138867
+tcm_corr_spear$TF <- 0.3138867
+
+## Mito ribo pt
+cor(log10(Tcm_TPM_filt_CN[Tcm_TPM_filt_CN$ID %in% mito_ribo_list$ID,]$TPM_62Lpos_CX3CR1neg),
+log10(Tcm_TPM_filt_CN[Tcm_TPM_filt_CN$ID %in% mito_ribo_list$ID,]$CN_62Lpos_CX3CR1neg), use = "pairwise.complete.obs", method = "spearman") # -0.2323331
+tcm_corr_spear$mito_ribo <- -0.2323331
+
+tcm_corr_spear <- data.frame(tcm_corr_spear)
+
+
+
+```
+
+
+
+
+## Gene-class characteristics in tem subset
+```{r Gene-class characteristics in tem subset}
+
+### 1. Correlation ###
+tem_corr <- NULL
+
+## TCA
+cor(log10(Tem_TPM_filt_CN[Tem_TPM_filt_CN$ID %in% TCA_list$ID,]$TPM_62Lneg_CX3CR1pos),
+log10(Tem_TPM_filt_CN[Tem_TPM_filt_CN$ID %in% TCA_list$ID,]$CN_62Lneg_CX3CR1pos), use = "pairwise.complete.obs", method = "pearson") # 0.546258
+tem_corr$TCA <- 0.546258
+
+## mammalian ribosomal pt
+cor(log10(Tem_TPM_filt_CN[Tem_TPM_filt_CN$ID %in% mamm_ribo_list$ID,]$TPM_62Lneg_CX3CR1pos),
+log10(Tem_TPM_filt_CN[Tem_TPM_filt_CN$ID %in% mamm_ribo_list$ID,]$CN_62Lneg_CX3CR1pos), use = "pairwise.complete.obs", method = "pearson") # 0.6625806
+tem_corr$mamm_ribo <- 0.6625806
+  
+## RBPs
+cor(log10(Tem_TPM_filt_CN[Tem_TPM_filt_CN$ID %in% RBP_list$ID,]$TPM_62Lneg_CX3CR1pos),
+log10(Tem_TPM_filt_CN[Tem_TPM_filt_CN$ID %in% RBP_list$ID,]$CN_62Lneg_CX3CR1pos), use = "pairwise.complete.obs", method = "pearson") # 0.4289047
+tem_corr$RBP <- 0.4289047
+  
+## CD
+cor(log10(Tem_TPM_filt_CN[Tem_TPM_filt_CN$ID %in% CD_list$ID,]$TPM_62Lneg_CX3CR1pos),
+log10(Tem_TPM_filt_CN[Tem_TPM_filt_CN$ID %in% CD_list$ID,]$CN_62Lneg_CX3CR1pos), use = "pairwise.complete.obs", method = "pearson") # 0.5554069
+tem_corr$CD <- 0.5554069
+
+## Secreted
+cor(log10(Tem_TPM_filt_CN[Tem_TPM_filt_CN$ID %in% secreted_list$ID,]$TPM_62Lneg_CX3CR1pos),
+log10(Tem_TPM_filt_CN[Tem_TPM_filt_CN$ID %in% secreted_list$ID,]$CN_62Lneg_CX3CR1pos), use = "pairwise.complete.obs", method = "pearson") # 0.5038837
+tem_corr$secreted <- 0.5038837
+
+## TFs
+cor(log10(Tem_TPM_filt_CN[Tem_TPM_filt_CN$ID %in% TF_list$ID,]$TPM_62Lneg_CX3CR1pos),
+log10(Tem_TPM_filt_CN[Tem_TPM_filt_CN$ID %in% TF_list$ID,]$CN_62Lneg_CX3CR1pos), use = "pairwise.complete.obs", method = "pearson") # 0.3225052
+tem_corr$TF <- 0.3225052
+
+## Mito ribo pt
+cor(log10(Tem_TPM_filt_CN[Tem_TPM_filt_CN$ID %in% mito_ribo_list$ID,]$TPM_62Lneg_CX3CR1pos),
+log10(Tem_TPM_filt_CN[Tem_TPM_filt_CN$ID %in% mito_ribo_list$ID,]$CN_62Lneg_CX3CR1pos), use = "pairwise.complete.obs", method = "pearson") # -0.2590385
+tem_corr$mito_ribo <- -0.2590385
+
+tem_corr <- data.frame(tem_corr)
+
+
+#_____________________________#
+
+### 2. Slope ###
+
+tem_slope <- NULL
+
+## TCA
+summary(lm(log10(Tem_TPM_filt_CN[Tem_TPM_filt_CN$ID %in% TCA_list$ID,]$CN_62Lneg_CX3CR1pos)~
+log10(Tem_TPM_filt_CN[Tem_TPM_filt_CN$ID %in% TCA_list$ID,]$TPM_62Lneg_CX3CR1pos)) ) # 1.129 **
+tem_slope$TCA <- 1.129
+
+## mammalian ribosomal pt
+summary(lm(log10(Tem_TPM_filt_CN[Tem_TPM_filt_CN$ID %in% mamm_ribo_list$ID,]$CN_62Lneg_CX3CR1pos)~
+log10(Tem_TPM_filt_CN[Tem_TPM_filt_CN$ID %in% mamm_ribo_list$ID,]$TPM_62Lneg_CX3CR1pos)) )# 0.6868 ***
+tem_slope$mamm_ribo <- 0.6868
+  
+## RBPs
+summary(lm(log10(Tem_TPM_filt_CN[Tem_TPM_filt_CN$ID %in% RBP_list$ID,]$CN_62Lneg_CX3CR1pos)~
+log10(Tem_TPM_filt_CN[Tem_TPM_filt_CN$ID %in% RBP_list$ID,]$TPM_62Lneg_CX3CR1pos))) # 0.7242  ***
+tem_slope$RBP <- 0.7242
+  
+## CD
+summary(lm(log10(Tem_TPM_filt_CN[Tem_TPM_filt_CN$ID %in% CD_list$ID,]$CN_62Lneg_CX3CR1pos)~
+log10(Tem_TPM_filt_CN[Tem_TPM_filt_CN$ID %in% CD_list$ID,]$TPM_62Lneg_CX3CR1pos)) )# 0.6196 ***
+tem_slope$CD <- 0.6196
+
+## Secreted
+summary(lm(log10(Tem_TPM_filt_CN[Tem_TPM_filt_CN$ID %in% secreted_list$ID,]$CN_62Lneg_CX3CR1pos)~
+log10(Tem_TPM_filt_CN[Tem_TPM_filt_CN$ID %in% secreted_list$ID,]$TPM_62Lneg_CX3CR1pos))) # 0.6108  *
+tem_slope$secreted <- 0.6108
+
+## TFs
+summary(lm(log10(Tem_TPM_filt_CN[Tem_TPM_filt_CN$ID %in% TF_list$ID,]$CN_62Lneg_CX3CR1pos)~
+log10(Tem_TPM_filt_CN[Tem_TPM_filt_CN$ID %in% TF_list$ID,]$TPM_62Lneg_CX3CR1pos)) )# 0.4425 ***
+tem_slope$TF <- 0.4425
+
+## Mito ribo pt
+summary(lm(log10(Tem_TPM_filt_CN[Tem_TPM_filt_CN$ID %in% mito_ribo_list$ID,]$CN_62Lneg_CX3CR1pos)~
+log10(Tem_TPM_filt_CN[Tem_TPM_filt_CN$ID %in% mito_ribo_list$ID,]$TPM_62Lneg_CX3CR1pos))) # -0.2384  *
+tem_slope$mito_ribo <- -0.2384  
+
+tem_slope <- data.frame(tem_slope)
+
+
+
+
+### 3. Spearman's correlation ###
+tem_corr_spear <- NULL
+
+## TCA
+cor(log10(Tem_TPM_filt_CN[Tem_TPM_filt_CN$ID %in% TCA_list$ID,]$TPM_62Lneg_CX3CR1pos),
+log10(Tem_TPM_filt_CN[Tem_TPM_filt_CN$ID %in% TCA_list$ID,]$CN_62Lneg_CX3CR1pos), use = "pairwise.complete.obs", method = "spearman") # 0.4769231
+tem_corr_spear$TCA <- 0.4769231
+
+## mammalian ribosomal pt
+cor(log10(Tem_TPM_filt_CN[Tem_TPM_filt_CN$ID %in% mamm_ribo_list$ID,]$TPM_62Lneg_CX3CR1pos),
+log10(Tem_TPM_filt_CN[Tem_TPM_filt_CN$ID %in% mamm_ribo_list$ID,]$CN_62Lneg_CX3CR1pos), use = "pairwise.complete.obs", method = "spearman") # 0.4416565
+tem_corr_spear$mamm_ribo <- 0.4416565
+  
+## RBPs
+cor(log10(Tem_TPM_filt_CN[Tem_TPM_filt_CN$ID %in% RBP_list$ID,]$TPM_62Lneg_CX3CR1pos),
+log10(Tem_TPM_filt_CN[Tem_TPM_filt_CN$ID %in% RBP_list$ID,]$CN_62Lneg_CX3CR1pos), use = "pairwise.complete.obs", method = "spearman") # 0.4394759
+tem_corr_spear$RBP <- 0.4394759
+  
+## CD
+cor(log10(Tem_TPM_filt_CN[Tem_TPM_filt_CN$ID %in% CD_list$ID,]$TPM_62Lneg_CX3CR1pos),
+log10(Tem_TPM_filt_CN[Tem_TPM_filt_CN$ID %in% CD_list$ID,]$CN_62Lneg_CX3CR1pos), use = "pairwise.complete.obs", method = "spearman") # 0.6302998
+tem_corr_spear$CD <- 0.6302998
+
+## Secreted
+cor(log10(Tem_TPM_filt_CN[Tem_TPM_filt_CN$ID %in% secreted_list$ID,]$TPM_62Lneg_CX3CR1pos),
+log10(Tem_TPM_filt_CN[Tem_TPM_filt_CN$ID %in% secreted_list$ID,]$CN_62Lneg_CX3CR1pos), use = "pairwise.complete.obs", method = "spearman") # 0.4338462
+tem_corr_spear$secreted <- 0.4338462
+
+## TFs
+cor(log10(Tem_TPM_filt_CN[Tem_TPM_filt_CN$ID %in% TF_list$ID,]$TPM_62Lneg_CX3CR1pos),
+log10(Tem_TPM_filt_CN[Tem_TPM_filt_CN$ID %in% TF_list$ID,]$CN_62Lneg_CX3CR1pos), use = "pairwise.complete.obs", method = "spearman") # 0.2904234
+tem_corr_spear$TF <- 0.2904234
+
+## Mito ribo pt
+cor(log10(Tem_TPM_filt_CN[Tem_TPM_filt_CN$ID %in% mito_ribo_list$ID,]$TPM_62Lneg_CX3CR1pos),
+log10(Tem_TPM_filt_CN[Tem_TPM_filt_CN$ID %in% mito_ribo_list$ID,]$CN_62Lneg_CX3CR1pos), use = "pairwise.complete.obs", method = "spearman") # -0.2230951
+tem_corr_spear$mito_ribo <- -0.2230951
+
+tem_corr_spear <- data.frame(tem_corr_spear)
+
+
+
+
+```
+
+
+## HM of correlations
+```{r HM of correlations}
+tn_corr <- data.frame(t(tn_corr))
+colnames(tn_corr) <- "Tn"
+
+tcm_corr<- data.frame(t(tcm_corr))
+colnames(tcm_corr) <- "Tcm"
+
+tem_corr <- data.frame(t(tem_corr))
+colnames(tem_corr) <- "Tem"
+
+corr_2G <- data.frame(t(corr_2G))
+colnames(corr_2G) <- "Tact"
+
+T_sub_correlations <- cbind.data.frame(tn_corr,tcm_corr,tem_corr,corr_2G)
+
+# If we want to revers the row order : ) 
+T_sub_correlations$order <- 1:nrow(T_sub_correlations)
+T_sub_correlations <- T_sub_correlations[order(T_sub_correlations$order,decreasing = T),]
+
+
+col_fun = colorRamp2(c(-3, -1.5, 0, 1.5, 3), c("#053061","#579EC9","#FFFFFF","#D96651","#67001F"))
+
+pheatmap(T_sub_correlations[1:4], col_fun(seq(-3,3,by=0.01)) ,scale = "none",
+         clustering_distance_cols = "canberra", cluster_cols = F, cluster_rows = F,
+         labels_col=colnames(T_sub_correlations[1:4]), fontsize_row=7, border_color = "black",
+         clustering_distance_rows = "manhattan",display_numbers=T,gaps_col = c(3,3))
+
+```
+
+## HM of slopes
+```{r HM of slopes}
+
+tn_slope <- data.frame(t(tn_slope))
+colnames(tn_slope) <- "Tn"
+
+tcm_slope<- data.frame(t(tcm_slope))
+colnames(tcm_slope) <- "Tcm"
+
+tem_slope <- data.frame(t(tem_slope))
+colnames(tem_slope) <- "Tem"
+
+slope_2G <- data.frame(t(slope_2G))
+colnames(slope_2G) <- "Tact"
+
+
+T_sub_slopes <- cbind.data.frame(tn_slope,tcm_slope,tem_slope,slope_2G)
+
+# If we want to revers the row order : ) 
+T_sub_slopes$order <- 1:nrow(T_sub_slopes)
+T_sub_slopes <- T_sub_slopes[order(T_sub_slopes$order,decreasing = T),]
+
+col_fun = colorRamp2(c(-3, -1.5, 0, 1.5, 3), c("#053061","#579EC9","#FFFFFF","#D96651","#67001F"))
+
+pheatmap(T_sub_slopes[1:4], col_fun(seq(-3,3,by=0.01)) ,scale = "none",
+         clustering_distance_cols = "canberra", cluster_cols = F, cluster_rows = F,
+         labels_col=colnames(T_sub_slopes[1:4]), fontsize_row=7, border_color = "black",
+         clustering_distance_rows = "manhattan",display_numbers=T, gaps_col = c(3,3))
+
+```
+
+
+
+## HM of spearman correlations
+```{r HM of correlations}
+tn_corr_spear <- data.frame(t(tn_corr_spear))
+colnames(tn_corr_spear) <- "Tn"
+
+tcm_corr_spear <- data.frame(t(tcm_corr_spear))
+colnames(tcm_corr_spear) <- "Tcm"
+
+tem_corr_spear <- data.frame(t(tem_corr_spear))
+colnames(tem_corr_spear) <- "Tem"
+
+corr_spear_2G <- data.frame(t(corr_2G_spearman))
+colnames(corr_spear_2G) <- "Tact"
+
+T_sub_corr_spearelations <- cbind.data.frame(tn_corr_spear,tcm_corr_spear,tem_corr_spear,corr_spear_2G)
+
+# If we want to revers the row order : ) 
+T_sub_corr_spearelations$order <- 1:nrow(T_sub_corr_spearelations)
+T_sub_corr_spearelations <- T_sub_corr_spearelations[order(T_sub_corr_spearelations$order,decreasing = T),]
+
+
+col_fun = colorRamp2(c(-3, -1.5, 0, 1.5, 3), c("#053061","#579EC9","#FFFFFF","#D96651","#67001F"))
+
+pheatmap(T_sub_corr_spearelations[1:4], col_fun(seq(-3,3,by=0.01)) ,scale = "none",
+         clustering_distance_cols = "canberra", cluster_cols = F, cluster_rows = F,
+         labels_col=colnames(T_sub_corr_spearelations[1:4]), fontsize_row=7, border_color = "black",
+         clustering_distance_rows = "manhattan",display_numbers=T,gaps_col = c(3,3))
+
+```
+
